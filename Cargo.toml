@@ -1,0 +1,66 @@
+[package]
+name = "zero-x-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Trade tokens across chains using 0x APIs"
+
+[[bin]]
+name = "0x"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env", "string"] }
+clap_complete = "4"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# EVM
+alloy = { version = "1", features = [
+    "signers",
+    "signer-local",
+    "provider-http",
+    "network",
+    "rpc-types",
+    "sol-types",
+    "contract",
+] }
+alloy-dyn-abi = { version = "1", features = ["eip712"] }
+
+# Solana
+solana-sdk = "2"
+solana-client = "2"
+
+# Error handling
+thiserror = "2"
+
+# Output & UX
+colored = "3"
+comfy-table = "7"
+dialoguer = "0.12"
+indicatif = "0.17"
+
+# Utilities
+dirs = "6"
+base64 = "0.22"
+hex = "0.4"
+bs58 = "0.5"
+bincode = "1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# OS keyring for wallet secrets
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

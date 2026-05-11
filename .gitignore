@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo.lock is committed for a binary crate (reproducible builds). Leave it.
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment / local secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Local Claude Code overrides (project-specific permission grants, etc.)
+.claude/settings.local.json

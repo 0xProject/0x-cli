@@ -239,6 +239,20 @@ When stdout is not a TTY (piped or redirected), output automatically switches to
 
 Every command's `--help` ends with a `RESPONSE:` block documenting the `data` payload it returns. Run `0x swap --help`, `0x cross-chain --help`, etc. to see field names, types, and which fields are optional. Agents can read this without invoking the command.
 
+### Bundled Agent Skill
+
+`0x skill print` writes the bundled Claude agent skill (compiled into the binary, always in sync with the running version) to stdout. Pipe it straight into your agent's skill directory:
+
+```bash
+# Claude Code skills directory
+0x skill print > ~/.claude/skills/0x.md
+
+# Quick peek
+0x skill print | less
+```
+
+The skill explains exit codes, output envelope shape, dry-run patterns, and per-chain token references. `-o`/`--output` is ignored — output is always raw markdown.
+
 ### JSON Envelope
 
 Every command produces a consistent envelope:

@@ -259,6 +259,33 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: Shell,
     },
+
+    /// Print the bundled Claude agent skill
+    #[command(
+        long_about = "Print or manage the bundled Claude agent skill — a\n\
+            markdown document describing how an AI agent should use this CLI\n\
+            (commands, output contract, exit codes, gotchas). The skill is\n\
+            compiled into the binary so it always matches this version.",
+        after_help = "EXAMPLES:\n\
+            \x20   # Print to stdout\n\
+            \x20   0x skill print\n\n\
+            \x20   # Pipe directly into Claude Code's skills directory\n\
+            \x20   0x skill print > ~/.claude/skills/0x.md\n\n\
+            \x20   # Quick peek\n\
+            \x20   0x skill print | less\n\n\
+            NOTE: `skill print` writes raw markdown to stdout — the global\n\
+            -o/--output flag is ignored for this command."
+    )]
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SkillAction {
+    /// Write the embedded skill markdown to stdout
+    Print,
 }
 
 #[derive(Subcommand)]

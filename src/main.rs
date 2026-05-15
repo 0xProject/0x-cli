@@ -10,7 +10,7 @@ mod token_cache;
 mod wallet;
 
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction, OutputFormat};
+use cli::{Cli, Commands, ConfigAction, OutputFormat, SkillAction};
 use output::envelope::Metadata;
 use output::OutputHandler;
 use std::io::IsTerminal;
@@ -67,6 +67,7 @@ async fn main() {
                 Commands::Status(_) => "status",
                 Commands::Chains => "chains",
                 Commands::Completions { .. } => "completions",
+                Commands::Skill { .. } => "skill",
             };
             output.error(command_name, &err, Metadata::default())
         }
@@ -101,5 +102,8 @@ async fn run_command(
             clap_complete::generate(*shell, &mut cmd, "0x", &mut std::io::stdout());
             Ok(0)
         }
+        Commands::Skill { action } => match action {
+            SkillAction::Print => commands::skill::run_print(),
+        },
     }
 }

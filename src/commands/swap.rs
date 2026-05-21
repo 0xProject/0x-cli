@@ -184,7 +184,10 @@ async fn run_evm_swap(
     metadata.zid = quote.zid.clone();
 
     // Resolve token metadata for correct decimal display
-    let rpc_url_for_meta = config::try_resolve_rpc_url(config, chain_info);
+    let rpc_url_for_meta = global
+        .rpc_url
+        .clone()
+        .or_else(|| config::try_resolve_rpc_url(config, chain_info));
     let mut token_cache = TokenCache::new();
     let (sell_dec, sell_sym, buy_dec, buy_sym) = if let Some(ref rpc) = rpc_url_for_meta {
         if let Some(s) = &spinner {

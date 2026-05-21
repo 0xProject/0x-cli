@@ -131,7 +131,10 @@ pub async fn run_gasless(
     }
 
     // Resolve token metadata for correct decimals
-    let rpc_url = config::try_resolve_rpc_url(&config, chain_info);
+    let rpc_url = global
+        .rpc_url
+        .clone()
+        .or_else(|| config::try_resolve_rpc_url(&config, chain_info));
     let mut cache = TokenCache::new();
     let (sell_dec, sell_sym, buy_dec, buy_sym) = if let Some(ref rpc) = rpc_url {
         let sm = cache.resolve_evm(rpc, &quote.sell_token).await;

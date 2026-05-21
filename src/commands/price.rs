@@ -179,10 +179,11 @@ pub async fn run(
         let resp = resp?;
 
         // Resolve token metadata for gasless price
-        let rpc_url = global
-            .rpc_url
-            .clone()
-            .or_else(|| config::try_resolve_rpc_url(&config, chain_info));
+        let rpc_url = config::try_resolve_rpc_url_with_override(
+            global.rpc_url.as_deref(),
+            &config,
+            chain_info,
+        );
         let mut cache = TokenCache::new();
         let (sell_dec, sell_sym, buy_dec, buy_sym) = if let Some(ref rpc) = rpc_url {
             let sm = cache.resolve_evm(rpc, &resp.sell_token).await;
@@ -245,10 +246,8 @@ pub async fn run(
     metadata.zid = resp.zid.clone();
 
     // Resolve token decimals and symbols via RPC
-    let rpc_url = global
-        .rpc_url
-        .clone()
-        .or_else(|| config::try_resolve_rpc_url(&config, chain_info));
+    let rpc_url =
+        config::try_resolve_rpc_url_with_override(global.rpc_url.as_deref(), &config, chain_info);
     let mut cache = TokenCache::new();
     let (sell_decimals, sell_symbol, buy_decimals, buy_symbol) = if let Some(ref rpc) = rpc_url {
         let sell_meta = cache.resolve_evm(rpc, &resp.sell_token).await;

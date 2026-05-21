@@ -136,7 +136,8 @@ pub async fn run(
         }
     }
 
-    let rpc_url = config::resolve_rpc_url(config, chain_info)?;
+    let rpc_url =
+        config::resolve_rpc_url_with_override(global.rpc_url.as_deref(), config, chain_info)?;
 
     let spinner = output.spinner("Executing Solana swap...");
 

@@ -6,14 +6,11 @@ use std::fs;
 use std::path::PathBuf;
 use types::AppConfig;
 
-/// Resolve the RPC URL for a chain: `ZEROX_RPC_URL` env var → config (by name
-/// or numeric id) → a built-in default for well-known chains. Errors when none
-/// of the above produces a URL.
+/// Resolve the RPC URL for a chain: config (by name or numeric id) → built-in
+/// default for well-known chains. Errors when none of the above produces a URL.
+/// The `--rpc-url` flag and `ZEROX_RPC_URL` env var are handled at the clap
+/// layer and reach this resolver via [`resolve_rpc_url_with_override`].
 pub fn resolve_rpc_url(config: &AppConfig, chain_info: &ChainInfo) -> Result<String, CliError> {
-    if let Ok(url) = std::env::var("ZEROX_RPC_URL") {
-        return Ok(url);
-    }
-
     if let Some(url) = config.rpc.get(chain_info.name) {
         return Ok(url.clone());
     }
@@ -45,11 +42,27 @@ pub fn resolve_rpc_url(config: &AppConfig, chain_info: &ChainInfo) -> Result<Str
     })
 }
 
-/// Best-effort RPC resolution: returns `None` when no URL is configured and
-/// there is no built-in default. Use when an RPC is nice-to-have (e.g. token
-/// metadata lookup) rather than required.
-pub fn try_resolve_rpc_url(config: &AppConfig, chain_info: &ChainInfo) -> Option<String> {
-    resolve_rpc_url(config, chain_info).ok()
+/// Resolve the RPC URL, preferring the CLI override (`--rpc-url`) when set.
+/// Falls back to [`resolve_rpc_url`] (env → config → built-in default).
+pub fn resolve_rpc_url_with_override(
+    override_url: Option<&str>,
+    config: &AppConfig,
+    chain_info: &ChainInfo,
+) -> Result<String, CliError> {
+    if let Some(url) = override_url {
+        return Ok(url.to_string());
+    }
+    resolve_rpc_url(config, chain_info)
+}
+
+/// Best-effort version of [`resolve_rpc_url_with_override`]: returns `None`
+/// when neither the override nor the config produces a URL.
+pub fn try_resolve_rpc_url_with_override(
+    override_url: Option<&str>,
+    config: &AppConfig,
+    chain_info: &ChainInfo,
+) -> Option<String> {
+    resolve_rpc_url_with_override(override_url, config, chain_info).ok()
 }
 
 /// Returns the config directory path: ~/.0x-config/
@@ -425,6 +438,49 @@ mod tests {
             config.wallet.solana.as_deref(),
             Some("/home/user/.config/solana/id.json")
         );
+    }
+
+    #[test]
+    fn test_resolve_rpc_url_with_override_precedence() {
+        use crate::chain::{resolve_chain, ChainId, ChainInfo, ChainType};
+
+        let base = resolve_chain("base").unwrap();
+        let mut config = AppConfig::default();
+
+        // 1. Override wins over everything else, even when config has a value.
+        config
+            .rpc
+            .insert("base".to_string(), "https://configured.example".to_string());
+        let resolved = resolve_rpc_url_with_override(
+            Some("https://override.example"),
+            &config,
+            base,
+        )
+        .unwrap();
+        assert_eq!(resolved, "https://override.example");
+
+        // 2. No override → fall back to config.
+        let resolved = resolve_rpc_url_with_override(None, &config, base).unwrap();
+        assert_eq!(resolved, "https://configured.example");
+
+        // 3. No override and no config → fall back to the built-in default.
+        let empty = AppConfig::default();
+        let resolved = resolve_rpc_url_with_override(None, &empty, base).unwrap();
+        assert_eq!(resolved, "https://base.llamarpc.com");
+
+        // 4. No override, no config, no default → Err.
+        let unknown = ChainInfo {
+            id: ChainId::Numeric(999_999),
+            name: "made-up-chain",
+            display_name: "Made Up",
+            native_token: "MUC",
+            explorer_url: "",
+            chain_type: ChainType::Evm,
+        };
+        assert!(resolve_rpc_url_with_override(None, &empty, &unknown).is_err());
+
+        // 5. try_ variant returns None instead of Err for the same case.
+        assert!(try_resolve_rpc_url_with_override(None, &empty, &unknown).is_none());
     }
 
     #[test]

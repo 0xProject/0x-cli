@@ -249,10 +249,11 @@ pub async fn run(
     if let Some(ref issues) = selected.issues {
         if let Some(ref allowance) = issues.allowance {
             if let Some(signer) = origin_wallet.evm_signer() {
-                let origin_rpc = match global.rpc_url.as_deref() {
-                    Some(url) => url.to_string(),
-                    None => config::resolve_rpc_url(&config, origin)?,
-                };
+                let origin_rpc = config::resolve_rpc_url_with_override(
+                    global.rpc_url.as_deref(),
+                    &config,
+                    origin,
+                )?;
 
                 output.info(&format!(
                     "Approving token for cross-chain swap (spender: {})...",
@@ -287,10 +288,8 @@ pub async fn run(
             details: None,
             suggestion: None,
         })?;
-        let rpc_url = match global.rpc_url.as_deref() {
-            Some(url) => url.to_string(),
-            None => config::resolve_rpc_url(&config, origin)?,
-        };
+        let rpc_url =
+            config::resolve_rpc_url_with_override(global.rpc_url.as_deref(), &config, origin)?;
 
         let result = crate::chain::evm::EvmExecutor::execute_swap(
             &rpc_url,
@@ -342,10 +341,11 @@ pub async fn run(
         let signed_tx = crate::chain::solana::sign_preserialized_transaction(serialized_tx, keypair)?;
 
         let solana_chain = chain::resolve_chain("solana")?;
-        let rpc_url = match global.rpc_url.as_deref() {
-            Some(url) => url.to_string(),
-            None => config::resolve_rpc_url(&config, solana_chain)?,
-        };
+        let rpc_url = config::resolve_rpc_url_with_override(
+            global.rpc_url.as_deref(),
+            &config,
+            solana_chain,
+        )?;
 
         let rpc = solana_client::nonblocking::rpc_client::RpcClient::new(rpc_url);
         let sig = rpc.send_transaction(&signed_tx).await.map_err(|e| CliError::Transaction {

@@ -7,8 +7,9 @@ use crate::config;
 use crate::error::{CliError, ErrorCode};
 use crate::output::envelope::{Metadata, Warning};
 use crate::output::human::KeyValueTable;
+use crate::output::trade::SideMeta;
 use crate::output::{HumanDisplay, OutputHandler};
-use crate::token_cache::TokenCache;
+use crate::token_cache::{resolve_pair_evm, TokenCache};
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -31,16 +32,16 @@ pub struct PriceResult {
 impl HumanDisplay for PriceResult {
     fn display_human(&self, writer: &mut dyn Write, color: bool) -> io::Result<()> {
         let mut rows = vec![
-            ("Sell".to_string(), self.sell_amount.formatted.clone()),
+            ("Sell".to_string(), self.sell_amount.display()),
             ("Buy".to_string(), format!(
                 "{}{}",
-                self.buy_amount.formatted,
+                self.buy_amount.display(),
                 self.buy_amount.usd_value.as_ref().map(|v| format!(" (~${v})")).unwrap_or_default()
             )),
             ("Rate".to_string(), self.rate.clone()),
             (
                 "Min Buy".to_string(),
-                self.min_buy_amount.formatted.clone(),
+                self.min_buy_amount.display(),
             ),
         ];
 
@@ -99,6 +100,7 @@ pub async fn run(
     // Validate token addresses
     chain::validate_token_address(&args.sell, chain_info)?;
     chain::validate_token_address(&args.buy, chain_info)?;
+    chain::validate_base_unit_amount(&args.amount)?;
 
     let client = ApiClient::new(api_key, global.timeout)?;
 
@@ -107,11 +109,7 @@ pub async fn run(
     // Amounts are in base units (e.g. 1000000 = 1 USDC with 6 decimals)
     let sell_amount = &args.amount;
 
-    let mut metadata = Metadata {
-        chain_id: chain_info.numeric_id(),
-        chain_name: Some(chain_info.display_name.to_string()),
-        ..Default::default()
-    };
+    let mut metadata = Metadata::for_chain(chain_info);
 
     if chain_info.is_solana() {
         // Solana price: call swap-instructions and use amountOut
@@ -142,22 +140,26 @@ pub async fn run(
         }
         let resp = resp?;
 
+        let sell = SideMeta::address_only(args.sell.clone());
+        let buy = SideMeta::address_only(args.buy.clone());
         let result = PriceResult {
-            chain: "Solana".to_string(),
-            sell_token: TokenInfo { address: args.sell.clone(), symbol: None, decimals: None },
-            buy_token: TokenInfo { address: args.buy.clone(), symbol: None, decimals: None },
-            sell_amount: TokenAmount { raw: sell_amount.to_string(), formatted: sell_amount.to_string(), usd_value: None },
-            buy_amount: TokenAmount { raw: resp.amount_out.to_string(), formatted: resp.amount_out.to_string(), usd_value: None },
-            min_buy_amount: TokenAmount { raw: resp.amount_out.to_string(), formatted: resp.amount_out.to_string(), usd_value: None },
-            rate: if amount_in > 0 { format!("{:.10}", resp.amount_out as f64 / amount_in as f64) } else { "N/A".into() },
+            chain: chain_info.display_name.to_string(),
+            sell_token: sell.token_info(),
+            buy_token: buy.token_info(),
+            sell_amount: sell.amount(sell_amount),
+            buy_amount: buy.amount(&resp.amount_out.to_string()),
+            min_buy_amount: buy.amount(&resp.amount_out.to_string()),
+            rate: if amount_in > 0 {
+                format!("{:.10}", resp.amount_out as f64 / amount_in as f64)
+            } else {
+                "N/A".into()
+            },
             gas_estimate: None,
             route: Vec::new(),
             liquidity_available: true,
         };
 
-        return output
-            .success("price", &result, metadata, Vec::new())
-            .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()));
+        return Ok(output.emit_success("price", &result, metadata, Vec::new(), 0));
     }
 
     if args.gasless {
@@ -185,36 +187,32 @@ pub async fn run(
             chain_info,
         );
         let mut cache = TokenCache::new();
-        let (sell_dec, sell_sym, buy_dec, buy_sym) = if let Some(ref rpc) = rpc_url {
-            let sm = cache.resolve_evm(rpc, &resp.sell_token).await;
-            let bm = cache.resolve_evm(rpc, &resp.buy_token).await;
-            (sm.decimals, Some(sm.symbol), bm.decimals, Some(bm.symbol))
-        } else {
-            (18, None, 18, None)
-        };
+        let mut warnings: Vec<Warning> = Vec::new();
+        let (sell_meta, buy_meta) = resolve_pair_evm(
+            &mut cache,
+            rpc_url.as_deref(),
+            chain_info.numeric_id().unwrap_or(0),
+            &resp.sell_token,
+            &resp.buy_token,
+            &mut warnings,
+        )
+        .await;
+        let sell = SideMeta::from_meta(resp.sell_token.clone(), sell_meta);
+        let buy = SideMeta::from_meta(resp.buy_token.clone(), buy_meta);
 
         let result = PriceResult {
             chain: chain_info.display_name.to_string(),
-            sell_token: TokenInfo {
-                address: resp.sell_token.clone(),
-                symbol: sell_sym,
-                decimals: Some(sell_dec),
-            },
-            buy_token: TokenInfo {
-                address: resp.buy_token.clone(),
-                symbol: buy_sym,
-                decimals: Some(buy_dec),
-            },
-            sell_amount: TokenAmount::new(&resp.sell_amount, sell_dec),
-            buy_amount: TokenAmount::new(&resp.buy_amount, buy_dec),
-            min_buy_amount: TokenAmount::new(&resp.min_buy_amount, buy_dec),
+            sell_token: sell.token_info(),
+            buy_token: buy.token_info(),
+            sell_amount: sell.amount(&resp.sell_amount),
+            buy_amount: buy.amount(&resp.buy_amount),
+            min_buy_amount: buy.amount(&resp.min_buy_amount),
             rate: compute_rate(&resp.sell_amount, &resp.buy_amount),
             gas_estimate: None, // Gasless = no gas
             route: Vec::new(),
             liquidity_available: resp.liquidity_available.unwrap_or(true),
         };
 
-        let mut warnings = Vec::new();
         if !result.liquidity_available {
             warnings.push(Warning {
                 code: "NO_LIQUIDITY".into(),
@@ -222,9 +220,7 @@ pub async fn run(
             });
         }
 
-        return output
-            .success("price", &result, metadata, warnings)
-            .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()));
+        return Ok(output.emit_success("price", &result, metadata, warnings, 0));
     }
 
     // Standard EVM price
@@ -249,21 +245,25 @@ pub async fn run(
     let rpc_url =
         config::try_resolve_rpc_url_with_override(global.rpc_url.as_deref(), &config, chain_info);
     let mut cache = TokenCache::new();
-    let (sell_decimals, sell_symbol, buy_decimals, buy_symbol) = if let Some(ref rpc) = rpc_url {
-        let sell_meta = cache.resolve_evm(rpc, &resp.sell_token).await;
-        let buy_meta = cache.resolve_evm(rpc, &resp.buy_token).await;
-        (sell_meta.decimals, Some(sell_meta.symbol), buy_meta.decimals, Some(buy_meta.symbol))
-    } else {
-        (18, None, 18, None)
-    };
+    let mut warnings: Vec<Warning> = Vec::new();
+    let (sell_meta, buy_meta) = resolve_pair_evm(
+        &mut cache,
+        rpc_url.as_deref(),
+        chain_info.numeric_id().unwrap_or(0),
+        &resp.sell_token,
+        &resp.buy_token,
+        &mut warnings,
+    )
+    .await;
+    let sell = SideMeta::from_meta(resp.sell_token.clone(), sell_meta);
+    let buy = SideMeta::from_meta(resp.buy_token.clone(), buy_meta);
 
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
 
-    let result = build_price_result(chain_info, &resp, sell_decimals, &sell_symbol, buy_decimals, &buy_symbol);
+    let result = build_price_result(chain_info, &resp, &sell, &buy);
 
-    let mut warnings = Vec::new();
     if !result.liquidity_available {
         warnings.push(Warning {
             code: "NO_LIQUIDITY".into(),
@@ -282,18 +282,14 @@ pub async fn run(
         });
     }
 
-    output
-        .success("price", &result, metadata, warnings)
-        .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("price", &result, metadata, warnings, 0))
 }
 
 fn build_price_result(
     chain_info: &chain::ChainInfo,
     resp: &PriceResponse,
-    sell_decimals: u8,
-    sell_symbol: &Option<String>,
-    buy_decimals: u8,
-    buy_symbol: &Option<String>,
+    sell: &SideMeta,
+    buy: &SideMeta,
 ) -> PriceResult {
     let route = resp
         .route
@@ -319,19 +315,11 @@ fn build_price_result(
 
     PriceResult {
         chain: chain_info.display_name.to_string(),
-        sell_token: TokenInfo {
-            address: resp.sell_token.clone(),
-            symbol: sell_symbol.clone(),
-            decimals: Some(sell_decimals),
-        },
-        buy_token: TokenInfo {
-            address: resp.buy_token.clone(),
-            symbol: buy_symbol.clone(),
-            decimals: Some(buy_decimals),
-        },
-        sell_amount: TokenAmount::new(&resp.sell_amount, sell_decimals),
-        buy_amount: TokenAmount::new(&resp.buy_amount, buy_decimals),
-        min_buy_amount: TokenAmount::new(&resp.min_buy_amount, buy_decimals),
+        sell_token: sell.token_info(),
+        buy_token: buy.token_info(),
+        sell_amount: sell.amount(&resp.sell_amount),
+        buy_amount: buy.amount(&resp.buy_amount),
+        min_buy_amount: buy.amount(&resp.min_buy_amount),
         rate: compute_rate(&resp.sell_amount, &resp.buy_amount),
         gas_estimate,
         route,

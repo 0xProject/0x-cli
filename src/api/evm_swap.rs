@@ -105,7 +105,17 @@ impl RouteInfo {
                     .proportion_bps
                     .as_ref()
                     .map(|bps| {
-                        let bps_num: f64 = bps.parse().unwrap_or(0.0);
+                        let bps_num: f64 = match bps.parse() {
+                            Ok(n) => n,
+                            Err(_) => {
+                                tracing::warn!(
+                                    source = %f.source,
+                                    proportion_bps = %bps,
+                                    "0x API returned unparseable proportionBps; defaulting to 0%"
+                                );
+                                0.0
+                            }
+                        };
                         format!("{:.0}%", bps_num / 100.0)
                     })
                     .unwrap_or_default();

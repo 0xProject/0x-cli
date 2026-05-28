@@ -15,9 +15,7 @@ pub fn run_path(output: &OutputHandler) -> Result<i32, CliError> {
     let data = ConfigPath {
         path: path.display().to_string(),
     };
-    output
-        .success("config path", &data, Metadata::default(), Vec::new())
-        .map_err(|e| CliError::config(crate::error::ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("config path", &data, Metadata::default(), Vec::new(), 0))
 }
 
 #[derive(Serialize)]
@@ -35,10 +33,7 @@ impl HumanDisplay for ConfigPath {
 pub fn run_show(output: &OutputHandler) -> Result<i32, CliError> {
     let config = config::load_config()?;
     let redacted = config.redacted();
-
-    output
-        .success("config show", &redacted, Metadata::default(), Vec::new())
-        .map_err(|e| CliError::config(crate::error::ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("config show", &redacted, Metadata::default(), Vec::new(), 0))
 }
 
 impl HumanDisplay for AppConfig {
@@ -51,7 +46,8 @@ impl HumanDisplay for AppConfig {
 /// Set a config value. Wallet secrets are routed to the OS keyring by default;
 /// pass `plaintext = true` to write them into the config file instead.
 pub fn run_set(key: &str, value: &str, plaintext: bool, output: &OutputHandler) -> Result<i32, CliError> {
-    let mut config = config::load_config()?;
+    // Disk-only view — never persist env-derived secrets back to the config file.
+    let mut config = config::load_config_disk_only()?;
     let storage = config::set_config_value(&mut config, key, value, plaintext)?;
     config::save_config(&config)?;
 
@@ -70,9 +66,7 @@ pub fn run_set(key: &str, value: &str, plaintext: bool, output: &OutputHandler) 
         SecretStorage::Config => "",
     };
     output.info(&format!("Set {key} successfully{storage_note}"));
-    output
-        .success("config set", &data, Metadata::default(), Vec::new())
-        .map_err(|e| CliError::config(crate::error::ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("config set", &data, Metadata::default(), Vec::new(), 0))
 }
 
 #[derive(Serialize)]
@@ -101,10 +95,7 @@ pub fn run_get(key: &str, output: &OutputHandler) -> Result<i32, CliError> {
         key: key.to_string(),
         value: value.clone(),
     };
-
-    output
-        .success("config get", &data, Metadata::default(), Vec::new())
-        .map_err(|e| CliError::config(crate::error::ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("config get", &data, Metadata::default(), Vec::new(), 0))
 }
 
 #[derive(Serialize)]
@@ -122,7 +113,7 @@ impl HumanDisplay for ConfigGetResult {
 /// Remove a config value (clears both config file and keyring entries for
 /// wallet keys).
 pub fn run_unset(key: &str, output: &OutputHandler) -> Result<i32, CliError> {
-    let mut config = config::load_config()?;
+    let mut config = config::load_config_disk_only()?;
     let changed = config::unset_config_value(&mut config, key)?;
     config::save_config(&config)?;
 
@@ -136,9 +127,7 @@ pub fn run_unset(key: &str, output: &OutputHandler) -> Result<i32, CliError> {
     } else {
         output.info(&format!("{key} was not set; nothing to remove"));
     }
-    output
-        .success("config unset", &data, Metadata::default(), Vec::new())
-        .map_err(|e| CliError::config(crate::error::ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("config unset", &data, Metadata::default(), Vec::new(), 0))
 }
 
 #[derive(Serialize)]
@@ -161,7 +150,7 @@ impl HumanDisplay for ConfigUnsetResult {
 pub fn run_init(output: &OutputHandler) -> Result<i32, CliError> {
     output.info("Setting up 0x CLI configuration...\n");
 
-    let mut config = config::load_config().unwrap_or_default();
+    let mut config = config::load_config_disk_only().unwrap_or_default();
 
     // API key
     let api_key: String = dialoguer::Input::new()
@@ -249,9 +238,7 @@ pub fn run_init(output: &OutputHandler) -> Result<i32, CliError> {
         config::config_file().display()
     ));
 
-    output
-        .success("config init", &data, Metadata::default(), Vec::new())
-        .map_err(|e| CliError::config(crate::error::ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("config init", &data, Metadata::default(), Vec::new(), 0))
 }
 
 #[derive(Serialize)]

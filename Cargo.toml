@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "Trade tokens across chains using 0x APIs"
 
+[lib]
+name = "zero_x_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "0x"
-path = "src/main.rs"
+path = "src/bin/cli.rs"
 
 [dependencies]
 # CLI
@@ -18,11 +22,20 @@ tokio = { version = "1", features = ["full"] }
 
 # HTTP
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest-middleware = { version = "0.4", features = ["json"] }
+reqwest-retry = "0.7"
+
+# Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+
+# Precise rate arithmetic for compute_rate
+bigdecimal = "0.4"
 
 # EVM
 alloy = { version = "1", features = [

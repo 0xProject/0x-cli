@@ -1,53 +1,17 @@
-mod api;
-mod chain;
-mod cli;
-mod commands;
-mod config;
-mod confirm;
-mod error;
-mod output;
-mod token_cache;
-mod wallet;
-
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction, OutputFormat, SkillAction};
-use output::envelope::Metadata;
-use output::OutputHandler;
+use zero_x_cli::cli::{Cli, Commands, ConfigAction, SkillAction};
+use zero_x_cli::output::envelope::Metadata;
+use zero_x_cli::output::OutputHandler;
+use zero_x_cli::{cli::OutputFormat, commands, error, GlobalOpts};
 use std::io::IsTerminal;
-
-/// Global options extracted from CLI flags, passed to all commands.
-pub struct GlobalOpts {
-    pub api_key: Option<String>,
-    pub wallet: Option<String>,
-    pub rpc_url: Option<String>,
-    pub timeout: u64,
-    pub yes: bool,
-    pub dry_run: bool,
-    pub verbose: bool,
-}
-
-impl From<&Cli> for GlobalOpts {
-    fn from(cli: &Cli) -> Self {
-        Self {
-            api_key: cli.api_key.clone(),
-            wallet: cli.wallet.clone(),
-            rpc_url: cli.rpc_url.clone(),
-            timeout: cli.timeout,
-            yes: cli.yes,
-            dry_run: cli.dry_run,
-            verbose: cli.verbose,
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    // Determine output format (auto-detect TTY)
-    let format = OutputFormat::detect(cli.output);
+    init_tracing(cli.verbose);
 
-    // Determine color (disabled if --no-color, NO_COLOR env, or non-TTY)
+    let format = OutputFormat::detect(cli.output);
     let color = !cli.no_color
         && std::env::var("NO_COLOR").is_err()
         && std::io::stdout().is_terminal()
@@ -58,22 +22,24 @@ async fn main() {
 
     let exit_code = match run_command(&cli, &output, &global).await {
         Ok(code) => code,
-        Err(err) => {
-            let command_name = match &cli.command {
-                Commands::Config { .. } => "config",
-                Commands::Price(_) => "price",
-                Commands::Swap(_) => "swap",
-                Commands::CrossChain(_) => "cross-chain",
-                Commands::Status(_) => "status",
-                Commands::Chains => "chains",
-                Commands::Completions { .. } => "completions",
-                Commands::Skill { .. } => "skill",
-            };
-            output.error(command_name, &err, Metadata::default())
-        }
+        Err(err) => output.error(cli.command.name(), &err, Metadata::default()),
     };
 
     std::process::exit(exit_code);
+}
+
+fn init_tracing(verbose: bool) {
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    // Honor RUST_LOG when set; otherwise default to "warn" (or "debug" with --verbose).
+    // CLI logs go to stderr so they don't pollute the JSON envelope on stdout.
+    let default_level = if verbose { "debug" } else { "warn" };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .try_init();
 }
 
 async fn run_command(

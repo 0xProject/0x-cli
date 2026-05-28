@@ -5,11 +5,12 @@ use crate::chain;
 use crate::chain::evm::{EvmExecutor, SwapResult};
 use crate::cli::SwapArgs;
 use crate::config;
-use crate::confirm::{confirm_trade, ConfirmResult, TradeSummary};
+use crate::confirm::{confirm_or_preview, ConfirmFlow, TradeSummary};
 use crate::error::{CliError, ErrorCode};
 use crate::output::envelope::{Metadata, Warning};
+use crate::output::trade::SideMeta;
 use crate::output::{HumanDisplay, OutputHandler};
-use crate::token_cache::TokenCache;
+use crate::token_cache::{resolve_pair_evm, TokenCache};
 use serde::Serialize;
 use std::io::{self, Write};
 
@@ -35,13 +36,24 @@ pub struct SwapOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_number: Option<u64>,
     pub dry_run: bool,
+    /// Preview-only result that should NOT be interpreted as a completed
+    /// simulation. Set when `confirm_trade` returned `NeedsConfirmation` and
+    /// the command exited early with code 25.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_confirmation: bool,
 }
 
 impl HumanDisplay for SwapOutput {
     fn display_human(&self, writer: &mut dyn Write, color: bool) -> io::Result<()> {
         use colored::Colorize;
 
-        if self.dry_run {
+        if self.needs_confirmation {
+            if color {
+                writeln!(writer, "\n  {}", "Quote Preview (needs confirmation)".bold().yellow())?;
+            } else {
+                writeln!(writer, "\n  Quote Preview (needs confirmation)")?;
+            }
+        } else if self.dry_run {
             if color {
                 writeln!(writer, "\n  {}", "Dry Run Complete".bold().yellow())?;
             } else {
@@ -66,7 +78,7 @@ impl HumanDisplay for SwapOutput {
             .as_deref()
             .unwrap_or(&self.buy_token.address);
 
-        writeln!(writer, "  {:<12} {} {}", "Sell:", self.sell_amount.formatted, sell_label)?;
+        writeln!(writer, "  {:<12} {} {}", "Sell:", self.sell_amount.display(), sell_label)?;
 
         let buy_usd = self
             .buy_amount
@@ -77,14 +89,14 @@ impl HumanDisplay for SwapOutput {
         writeln!(
             writer,
             "  {:<12} {} {}{}",
-            "Buy:", self.buy_amount.formatted, buy_label, buy_usd
+            "Buy:", self.buy_amount.display(), buy_label, buy_usd
         )?;
 
         writeln!(writer, "  {:<12} {}", "Rate:", self.rate)?;
         writeln!(
             writer,
             "  {:<12} {} {}",
-            "Min Buy:", self.min_buy_amount.formatted, buy_label
+            "Min Buy:", self.min_buy_amount.display(), buy_label
         )?;
 
         if !self.route.is_empty() {
@@ -128,6 +140,10 @@ pub async fn run(
 
     chain::validate_token_address(&args.sell, chain_info)?;
     chain::validate_token_address(&args.buy, chain_info)?;
+    chain::validate_base_unit_amount(&args.amount)?;
+    if let Some(ref recipient) = args.recipient {
+        chain::validate_token_address(recipient, chain_info)?;
+    }
 
     if chain_info.is_solana() {
         return super::solana_swap::run(args, output, &config, global).await;
@@ -159,16 +175,12 @@ async fn run_evm_swap(
     let signer = crate::wallet::evm::load_evm_signer(config, global.wallet.as_deref())?;
     let taker_address = format!("{:?}", signer.address());
 
-    let mut metadata = Metadata {
-        chain_id: Some(chain_id),
-        chain_name: Some(chain_info.display_name.to_string()),
-        ..Default::default()
-    };
-
+    let mut metadata = Metadata::for_chain(chain_info);
     let client = ApiClient::new(api_key, global.timeout)?;
 
-    // Step 1: Get quote
-    let spinner = output.spinner("Fetching Allowance Holder quote...");
+    // Step 1: Get quote. Spinner is cleared automatically on Drop, so a `?`
+    // early-return from the API call doesn't leak tick characters.
+    let spinner = output.spinner_guard("Fetching Allowance Holder quote...");
     let quote = client
         .get_evm_quote(
             chain_id,
@@ -186,21 +198,22 @@ async fn run_evm_swap(
     // Resolve token metadata for correct decimal display
     let rpc_url_for_meta =
         config::try_resolve_rpc_url_with_override(global.rpc_url.as_deref(), config, chain_info);
+    spinner.set_message("Resolving token metadata...");
     let mut token_cache = TokenCache::new();
-    let (sell_dec, sell_sym, buy_dec, buy_sym) = if let Some(ref rpc) = rpc_url_for_meta {
-        if let Some(s) = &spinner {
-            s.set_message("Resolving token metadata...");
-        }
-        let sm = token_cache.resolve_evm(rpc, &quote.sell_token).await;
-        let bm = token_cache.resolve_evm(rpc, &quote.buy_token).await;
-        (sm.decimals, Some(sm.symbol), bm.decimals, Some(bm.symbol))
-    } else {
-        (18, None, 18, None)
-    };
+    let mut metadata_warnings: Vec<Warning> = Vec::new();
+    let (sell_meta, buy_meta) = resolve_pair_evm(
+        &mut token_cache,
+        rpc_url_for_meta.as_deref(),
+        chain_id,
+        &quote.sell_token,
+        &quote.buy_token,
+        &mut metadata_warnings,
+    )
+    .await;
+    let sell = SideMeta::from_meta(quote.sell_token.clone(), sell_meta);
+    let buy = SideMeta::from_meta(quote.buy_token.clone(), buy_meta);
 
-    if let Some(s) = &spinner {
-        s.finish_and_clear();
-    }
+    drop(spinner);
 
     if quote.liquidity_available == Some(false) {
         return Err(CliError::Api {
@@ -234,17 +247,14 @@ async fn run_evm_swap(
             .join(" → ")
     };
 
-    let sell_display = crate::api::types::format_amount(&quote.sell_amount, sell_dec);
-    let buy_display = crate::api::types::format_amount(&quote.buy_amount, buy_dec);
-    let min_buy_display = crate::api::types::format_amount(&quote.min_buy_amount, buy_dec);
-
-    let sell_label = sell_sym.as_deref().unwrap_or(&args.sell);
-    let buy_label = buy_sym.as_deref().unwrap_or(&args.buy);
+    let sell_display = crate::api::types::display_amount(&quote.sell_amount, sell.decimals);
+    let buy_display = crate::api::types::display_amount(&quote.buy_amount, buy.decimals);
+    let min_buy_display = crate::api::types::display_amount(&quote.min_buy_amount, buy.decimals);
 
     let mut summary = TradeSummary::new(format!("Swap on {}", chain_info.display_name))
-        .row("Sell", format!("{sell_display} {sell_label}"))
-        .row("Buy", format!("{buy_display} {buy_label}"))
-        .row("Min Buy", format!("{min_buy_display} {buy_label}"))
+        .row("Sell", format!("{sell_display} {}", sell.label()))
+        .row("Buy", format!("{buy_display} {}", buy.label()))
+        .row("Min Buy", format!("{min_buy_display} {}", buy.label()))
         .row("Slippage", format!("{:.2}%", args.slippage as f64 / 100.0))
         .row("Route", route_str);
 
@@ -271,22 +281,20 @@ async fn run_evm_swap(
         ));
     }
 
-    match confirm_trade(output.format, global.yes, output.color, &summary)? {
-        ConfirmResult::Confirmed => {}
-        ConfirmResult::NeedsConfirmation => {
-            let (preview, preview_warnings) = build_swap_output(
-                chain_info,
-                &quote,
-                &route,
-                SwapResult::DryRun,
-                sell_dec,
-                &sell_sym,
-                buy_dec,
-                &buy_sym,
-            );
-            let _ = output.success("swap", &preview, metadata.clone(), preview_warnings);
-            return Ok(20);
-        }
+    let (preview, mut preview_warnings) =
+        build_swap_output(chain_info, &quote, &route, SwapResult::Preview, &sell, &buy);
+    preview_warnings.extend(metadata_warnings.iter().cloned());
+    match confirm_or_preview(
+        output,
+        global.yes,
+        &summary,
+        "swap",
+        &preview,
+        metadata.clone(),
+        preview_warnings,
+    )? {
+        ConfirmFlow::Confirmed => {}
+        ConfirmFlow::PreviewEmitted => return Ok(25),
     }
 
     let rpc_url =
@@ -306,10 +314,11 @@ async fn run_evm_swap(
         suggestion: Some("Try fetching a new quote".into()),
     })?;
 
-    let spinner = output.spinner("Executing swap...");
+    let spinner = output.spinner_guard("Executing swap...");
 
     let result = EvmExecutor::execute_swap(
         &rpc_url,
+        chain_id,
         signer,
         &args.sell,
         spender,
@@ -322,45 +331,28 @@ async fn run_evm_swap(
         tx.gas_price.as_deref(),
         global.dry_run,
         &|status| {
-            if let Some(s) = &spinner {
-                s.set_message(status.to_string());
-            }
+            spinner.set_message(status.to_string());
         },
     )
     .await?;
 
-    if let Some(s) = spinner {
-        s.finish_and_clear();
-    }
+    drop(spinner);
 
-    let (swap_output, warnings) = build_swap_output(
-        chain_info,
-        &quote,
-        &route,
-        result,
-        sell_dec,
-        &sell_sym,
-        buy_dec,
-        &buy_sym,
-    );
+    let (swap_output, mut warnings) =
+        build_swap_output(chain_info, &quote, &route, result, &sell, &buy);
+    warnings.extend(metadata_warnings);
 
     let exit_code = if swap_output.dry_run { 30 } else { 0 };
-    output
-        .success("swap", &swap_output, metadata, warnings)
-        .map(|_| exit_code)
-        .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("swap", &swap_output, metadata, warnings, exit_code))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_swap_output(
     chain_info: &chain::ChainInfo,
     quote: &QuoteResponse,
     route: &[RouteSource],
     result: SwapResult,
-    sell_decimals: u8,
-    sell_symbol: &Option<String>,
-    buy_decimals: u8,
-    buy_symbol: &Option<String>,
+    sell: &SideMeta,
+    buy: &SideMeta,
 ) -> (SwapOutput, Vec<Warning>) {
     let mut warnings = Vec::new();
 
@@ -378,37 +370,28 @@ fn build_swap_output(
 
     let rate = compute_rate(&quote.sell_amount, &quote.buy_amount);
 
-    let sell_info = TokenInfo {
-        address: quote.sell_token.clone(),
-        symbol: sell_symbol.clone(),
-        decimals: Some(sell_decimals),
-    };
-    let buy_info = TokenInfo {
-        address: quote.buy_token.clone(),
-        symbol: buy_symbol.clone(),
-        decimals: Some(buy_decimals),
-    };
-
-    let (gas_used, effective_gas_price, tx_hash, explorer_url, block_number, dry_run) = match result
-    {
-        SwapResult::Success(receipt) => (
-            Some(receipt.gas_used.to_string()),
-            Some(receipt.effective_gas_price.to_string()),
-            Some(receipt.tx_hash.clone()),
-            Some(chain_info.explorer_tx_url(&receipt.tx_hash)),
-            receipt.block_number,
-            false,
-        ),
-        SwapResult::DryRun => (None, None, None, None, None, true),
-    };
+    let (gas_used, effective_gas_price, tx_hash, explorer_url, block_number, dry_run, needs_confirmation) =
+        match result {
+            SwapResult::Success(receipt) => (
+                Some(receipt.gas_used.to_string()),
+                Some(receipt.effective_gas_price.to_string()),
+                Some(receipt.tx_hash.clone()),
+                Some(chain_info.explorer_tx_url(&receipt.tx_hash)),
+                receipt.block_number,
+                false,
+                false,
+            ),
+            SwapResult::DryRun => (None, None, None, None, None, true, false),
+            SwapResult::Preview => (None, None, None, None, None, false, true),
+        };
 
     let output = SwapOutput {
         chain: chain_info.display_name.to_string(),
-        sell_token: sell_info,
-        buy_token: buy_info,
-        sell_amount: TokenAmount::new(&quote.sell_amount, sell_decimals),
-        buy_amount: TokenAmount::new(&quote.buy_amount, buy_decimals),
-        min_buy_amount: TokenAmount::new(&quote.min_buy_amount, buy_decimals),
+        sell_token: sell.token_info(),
+        buy_token: buy.token_info(),
+        sell_amount: sell.amount(&quote.sell_amount),
+        buy_amount: buy.amount(&quote.buy_amount),
+        min_buy_amount: buy.amount(&quote.min_buy_amount),
         rate,
         gas_used,
         effective_gas_price,
@@ -417,6 +400,7 @@ fn build_swap_output(
         explorer_url,
         block_number,
         dry_run,
+        needs_confirmation,
     };
 
     (output, warnings)

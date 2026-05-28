@@ -1,5 +1,6 @@
 pub mod envelope;
 pub mod human;
+pub mod trade;
 
 use crate::cli::OutputFormat;
 use crate::error::CliError;
@@ -36,14 +37,18 @@ impl OutputHandler {
         self.start_time.elapsed().as_millis() as u64
     }
 
-    /// Render a successful result.
+    /// Render a successful result envelope to stdout. Returns the raw
+    /// `io::Result` for callers that want to handle write errors directly;
+    /// most commands should use [`Self::emit_success`] instead, which
+    /// converts BrokenPipe to a silent success and bubbles other write
+    /// failures to stderr.
     pub fn success<T: Serialize + HumanDisplay>(
         &self,
         command: &str,
         data: &T,
         metadata: Metadata,
         warnings: Vec<Warning>,
-    ) -> io::Result<i32> {
+    ) -> io::Result<()> {
         let stdout = io::stdout();
         let mut out = stdout.lock();
 
@@ -76,7 +81,39 @@ impl OutputHandler {
             }
         }
 
-        Ok(0)
+        Ok(())
+    }
+
+    /// Render a successful result envelope and return the supplied
+    /// `exit_code`. Used by every command to terminate the success path:
+    ///
+    /// - On a clean write: returns `exit_code` verbatim.
+    /// - On `BrokenPipe` (e.g. `0x chains -o json | head`): returns
+    ///   `exit_code` anyway — the downstream consumer closed the pipe, which
+    ///   is not a failure of *our* work.
+    /// - On any other write failure: prints a one-line diagnostic to stderr
+    ///   and returns `1`. We can't do anything more useful at that point.
+    ///
+    /// Replaces the old `output.success(...).map_err(|e| CliError::config(
+    /// ErrorCode::Unknown, ...))` boilerplate, which leaked a meaningless
+    /// "unknown" error code through the envelope for IO failures that
+    /// were not config errors.
+    pub fn emit_success<T: Serialize + HumanDisplay>(
+        &self,
+        command: &str,
+        data: &T,
+        metadata: Metadata,
+        warnings: Vec<Warning>,
+        exit_code: i32,
+    ) -> i32 {
+        match self.success(command, data, metadata, warnings) {
+            Ok(()) => exit_code,
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => exit_code,
+            Err(e) => {
+                let _ = writeln!(io::stderr(), "Error writing output: {e}");
+                1
+            }
+        }
     }
 
     /// Render an error.
@@ -140,6 +177,11 @@ impl OutputHandler {
     }
 
     /// Create a progress spinner on stderr (suppressed with --quiet).
+    ///
+    /// Prefer [`Self::spinner_guard`] in code paths that may error out — that
+    /// version guarantees the spinner is cleared on Drop so a `?` early-return
+    /// doesn't leave dangling tick characters on the terminal. This raw API
+    /// remains for non-fallible call sites (status command, price command).
     pub fn spinner(&self, msg: &str) -> Option<indicatif::ProgressBar> {
         if self.quiet {
             return None;
@@ -153,5 +195,44 @@ impl OutputHandler {
         pb.set_message(msg.to_string());
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
         Some(pb)
+    }
+
+    /// Spinner wrapped in an RAII guard: cleared automatically on Drop, so
+    /// `?` early-returns don't leak tick characters to the user's terminal.
+    pub fn spinner_guard(&self, msg: &str) -> SpinnerGuard {
+        SpinnerGuard {
+            inner: self.spinner(msg),
+        }
+    }
+}
+
+/// RAII wrapper that clears its spinner when dropped. Use `.set_message(...)`
+/// while the work is in flight; on success call `.finish()` (which clears
+/// the spinner) and on error/early-return the Drop impl does the same.
+pub struct SpinnerGuard {
+    inner: Option<indicatif::ProgressBar>,
+}
+
+impl SpinnerGuard {
+    pub fn set_message(&self, msg: impl Into<std::borrow::Cow<'static, str>>) {
+        if let Some(ref pb) = self.inner {
+            pb.set_message(msg);
+        }
+    }
+
+    /// Borrow the underlying spinner for APIs that take `Option<&ProgressBar>`
+    /// directly (e.g. the polling helpers). The Drop guard still owns the
+    /// spinner — don't outlive the guard with the returned reference.
+    pub fn progress_bar(&self) -> Option<&indicatif::ProgressBar> {
+        self.inner.as_ref()
+    }
+
+}
+
+impl Drop for SpinnerGuard {
+    fn drop(&mut self) {
+        if let Some(pb) = self.inner.take() {
+            pb.finish_and_clear();
+        }
     }
 }

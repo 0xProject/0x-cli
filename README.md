@@ -23,7 +23,7 @@ cargo install --path .
 ## Features
 
 - **4 APIs**: EVM Swap (Allowance Holder), Gasless Swap, Solana Swap, Cross-Chain
-- **21 chains**: Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Linea, Scroll, Blast, Mantle, Mode, Berachain, Sonic, Unichain, World Chain, Abstract, Ink, Monad, HyperEVM, Solana
+- **20 chains**: Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Linea, Scroll, Blast, Mantle, Berachain, Sonic, Unichain, World Chain, Abstract, Ink, Monad, HyperEVM, Solana
 - **Agent-first**: Auto-detect non-TTY for JSON output, structured error codes, stable exit codes, inline `RESPONSE:` schemas in every `--help`
 - **Safe by default**: OS keyring for wallet secrets, transaction simulation before every execution, `--dry-run` mode, exact token approvals
 - **Rich UX**: Colored tables, progress spinners, interactive confirmation, shell completions
@@ -376,7 +376,6 @@ Every interactive prompt has a flag equivalent:
 | 2741 | abstract | Abstract | ETH |
 | 5000 | mantle | Mantle | MNT |
 | 8453 | base | Base | ETH |
-| 34443 | mode | Mode | ETH |
 | 42161 | arbitrum | Arbitrum | ETH |
 | 43114 | avalanche | Avalanche | AVAX |
 | 57073 | ink | Ink | ETH |

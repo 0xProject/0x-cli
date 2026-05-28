@@ -1,4 +1,4 @@
-use crate::config::types::AppConfig;
+use crate::config::types::{is_path_like, AppConfig};
 use crate::error::{CliError, ErrorCode};
 use solana_sdk::signer::keypair::Keypair;
 use solana_sdk::signer::Signer;
@@ -29,14 +29,17 @@ pub fn load_solana_keypair(config: &AppConfig, cli_wallet: Option<&str>) -> Resu
         });
     };
 
-    // Try loading as file path first
-    if std::path::Path::new(&source).exists() {
-        return load_from_json_file(&source);
-    }
-
-    // Try as JSON array string: [1,2,3,...]
+    // Disambiguate by shape, not by filesystem state. Calling `Path::exists`
+    // on user input would (a) leak whether an arbitrary path exists via the
+    // error path, and (b) open a TOCTOU window between `exists()` and the
+    // subsequent `read_to_string`. The `is_path_like` heuristic mirrors the
+    // one used for config write-paths.
     if source.starts_with('[') {
+        // JSON array string: [1,2,3,...]
         return load_from_json_string(&source);
+    }
+    if is_path_like(&source) {
+        return load_from_json_file(&source);
     }
 
     // Try as base58-encoded secret key

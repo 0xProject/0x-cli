@@ -134,11 +134,7 @@ async fn run_gasless_status(
         suggestion: None,
     })?;
 
-    let metadata = Metadata {
-        chain_id: Some(chain_id),
-        chain_name: Some(chain_info.display_name.to_string()),
-        ..Default::default()
-    };
+    let metadata = Metadata::for_chain(chain_info);
 
     if args.poll {
         let spinner = output.spinner("Polling gasless status...");
@@ -165,9 +161,7 @@ async fn run_gasless_status(
         }
 
         let result = gasless_to_output(&resp, chain_info);
-        return output
-            .success("status", &result, metadata, Vec::new())
-            .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()));
+        return Ok(output.emit_success("status", &result, metadata, Vec::new(), 0));
     }
 
     // Single check
@@ -179,9 +173,7 @@ async fn run_gasless_status(
     }
 
     let result = gasless_to_output(&resp, chain_info);
-    output
-        .success("status", &result, metadata, Vec::new())
-        .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("status", &result, metadata, Vec::new(), 0))
 }
 
 fn gasless_to_output(
@@ -234,11 +226,7 @@ async fn run_cross_chain_status(
 
     let chain_info = chain::resolve_chain(chain_str)?;
 
-    let metadata = Metadata {
-        chain_id: chain_info.numeric_id(),
-        chain_name: Some(chain_info.display_name.to_string()),
-        ..Default::default()
-    };
+    let metadata = Metadata::for_chain(chain_info);
 
     if args.poll {
         let spinner = output.spinner("Polling cross-chain status...");
@@ -266,9 +254,7 @@ async fn run_cross_chain_status(
         }
 
         let result = cross_chain_to_output(&resp);
-        return output
-            .success("status", &result, metadata, Vec::new())
-            .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()));
+        return Ok(output.emit_success("status", &result, metadata, Vec::new(), 0));
     }
 
     // Single check
@@ -282,9 +268,13 @@ async fn run_cross_chain_status(
     }
 
     let result = cross_chain_to_output(&resp);
-    output
-        .success("status", &result, metadata, Vec::new())
-        .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()))
+    Ok(output.emit_success("status", &result, metadata, Vec::new(), 0))
+}
+
+fn json_chain_id_to_string(v: &serde_json::Value) -> Option<String> {
+    v.as_u64()
+        .map(|n| n.to_string())
+        .or_else(|| v.as_str().map(|s| s.to_string()))
 }
 
 fn cross_chain_to_output(
@@ -293,12 +283,23 @@ fn cross_chain_to_output(
     let transactions = resp
         .transactions
         .iter()
-        .map(|t| StatusTransaction {
-            chain_id: t.chain_id.as_ref().map(|v| v.to_string()),
-            chain_name: None,
-            tx_hash: t.tx_hash.clone(),
-            explorer_url: None,
-            timestamp: t.timestamp,
+        .map(|t| {
+            let chain_id_str = t.chain_id.as_ref().and_then(json_chain_id_to_string);
+            let resolved = chain_id_str
+                .as_deref()
+                .and_then(|id| chain::resolve_chain(id).ok());
+            let chain_name = resolved.map(|c| c.display_name.to_string());
+            let explorer_url = match (&resolved, &t.tx_hash) {
+                (Some(c), Some(hash)) => Some(c.explorer_tx_url(hash)),
+                _ => None,
+            };
+            StatusTransaction {
+                chain_id: chain_id_str,
+                chain_name,
+                tx_hash: t.tx_hash.clone(),
+                explorer_url,
+                timestamp: t.timestamp,
+            }
         })
         .collect();
 

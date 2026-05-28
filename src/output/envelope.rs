@@ -59,6 +59,19 @@ impl Default for Metadata {
     }
 }
 
+impl Metadata {
+    /// Build metadata for a chain-scoped command. Use this anywhere a command
+    /// would otherwise repeat
+    /// `Metadata { chain_id: ..., chain_name: ..., ..Default::default() }`.
+    pub fn for_chain(chain: &crate::chain::ChainInfo) -> Self {
+        Self {
+            chain_id: chain.numeric_id(),
+            chain_name: Some(chain.display_name.to_string()),
+            ..Default::default()
+        }
+    }
+}
+
 impl<T: Serialize> CliOutput<T> {
     pub fn success(command: &str, data: T, duration_ms: u64, metadata: Metadata) -> Self {
         Self {

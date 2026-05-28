@@ -2,6 +2,7 @@ use crate::cli::ApprovalStrategy;
 use crate::error::{CliError, ErrorCode};
 use alloy::primitives::{Address, Bytes, U256};
 use alloy::providers::{Provider, ProviderBuilder};
+use alloy::network::TransactionBuilder;
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
@@ -24,6 +25,41 @@ sol! {
 pub struct EvmExecutor;
 
 impl EvmExecutor {
+    /// Fail closed if the RPC reports a chain_id that doesn't match the one
+    /// the user selected via --chain. Catches "I pointed --rpc-url at an Arbitrum
+    /// endpoint while passing --chain ethereum" type mistakes before any
+    /// transaction (or approval) is signed.
+    async fn verify_chain_id<P: Provider>(
+        provider: &P,
+        expected: u64,
+        rpc_url: &str,
+    ) -> Result<(), CliError> {
+        let reported = provider
+            .get_chain_id()
+            .await
+            .map_err(|e| CliError::Api {
+                code: ErrorCode::RpcError,
+                message: format!("Failed to read chain_id from RPC: {e}"),
+                status: None,
+                details: None,
+                suggestion: Some("Check that the RPC endpoint is reachable".into()),
+            })?;
+        if reported != expected {
+            return Err(CliError::Api {
+                code: ErrorCode::ChainNotSupported,
+                message: format!(
+                    "RPC at {rpc_url} reports chain_id {reported}, but --chain selected {expected}. Refusing to sign cross-chain."
+                ),
+                status: None,
+                details: None,
+                suggestion: Some(
+                    "Configure --rpc-url (or `0x config set rpc.<chain> <url>`) to match the selected chain".into(),
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Ensure `spender` has at least `sell_amount` allowance to spend `sell_token`
     /// on behalf of the signer. Sends an approval tx and waits for confirmation
     /// when allowance is insufficient. Returns whether an approval was sent.
@@ -34,6 +70,7 @@ impl EvmExecutor {
     #[allow(clippy::too_many_arguments)]
     pub async fn ensure_allowance(
         rpc_url: &str,
+        chain_id: u64,
         signer: PrivateKeySigner,
         sell_token: &str,
         spender: &str,
@@ -55,6 +92,8 @@ impl EvmExecutor {
                 details: None,
                 suggestion: Some(format!("Check the RPC URL: {rpc_url}")),
             })?;
+
+        Self::verify_chain_id(&provider, chain_id, rpc_url).await?;
 
         let token_addr = Address::from_str(sell_token).map_err(|e| CliError::Api {
             code: ErrorCode::InputInvalid,
@@ -160,9 +199,14 @@ impl EvmExecutor {
     }
 
     /// Check allowance, optionally approve, simulate, and send a swap transaction.
+    /// `chain_id` binds the signed transaction to a specific chain — this both
+    /// prevents replay onto a different chain and guards against a misconfigured
+    /// `--rpc-url` pointing at the wrong network (we verify the RPC reports the
+    /// same chain id before sending anything).
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_swap(
         rpc_url: &str,
+        chain_id: u64,
         signer: PrivateKeySigner,
         sell_token: &str,
         spender: Option<&str>,
@@ -180,6 +224,7 @@ impl EvmExecutor {
         if let Some(spender_addr_str) = spender {
             Self::ensure_allowance(
                 rpc_url,
+                chain_id,
                 signer.clone(),
                 sell_token,
                 spender_addr_str,
@@ -204,6 +249,8 @@ impl EvmExecutor {
                 details: None,
                 suggestion: Some(format!("Check the RPC URL: {rpc_url}")),
             })?;
+
+        Self::verify_chain_id(&provider, chain_id, rpc_url).await?;
 
         // Step 2: Build the swap transaction
         let to_addr = Address::from_str(to).map_err(|e| CliError::Api {
@@ -239,7 +286,8 @@ impl EvmExecutor {
             .to(to_addr)
             .input(data_bytes.into())
             .value(value_u256)
-            .from(address);
+            .from(address)
+            .with_chain_id(chain_id);
 
         if let Some(gas_str) = gas {
             if let Ok(gas_val) = gas_str.parse::<u64>() {
@@ -340,6 +388,10 @@ impl EvmExecutor {
 pub enum SwapResult {
     Success(SwapReceipt),
     DryRun,
+    /// Quote/preview only — nothing was simulated or sent. Distinct from
+    /// `DryRun` so the JSON envelope can communicate "needs confirmation" vs
+    /// "dry-run completed".
+    Preview,
 }
 
 /// Receipt from a successful swap transaction.

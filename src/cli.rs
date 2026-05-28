@@ -23,14 +23,16 @@ use clap_complete::Shell;
         EXIT CODES:\n\
         \x20   0   Success\n\
         \x20   1   General error\n\
-        \x20   2   Validation error (bad input, insufficient balance)\n\
+        \x20   2   Input error (malformed CLI args, unsupported chain)\n\
         \x20   3   Config error (missing API key, wallet)\n\
         \x20   4   Network error (retry with backoff)\n\
-        \x20   5   Auth error (invalid API key)\n\
+        \x20   5   Auth error (invalid API key, plan does not include endpoint)\n\
+        \x20   6   Validation error from API (no liquidity, insufficient balance/allowance, token not supported)\n\
         \x20   10  Simulation failed (do not retry same params)\n\
         \x20   11  Transaction reverted on-chain\n\
         \x20   12  Transaction pending (poll with '0x status')\n\
         \x20   20  User cancelled\n\
+        \x20   25  Needs confirmation (run again with --yes to execute)\n\
         \x20   30  Dry-run completed successfully"
 )]
 pub struct Cli {
@@ -76,6 +78,23 @@ pub struct Cli {
     /// Disable colored output
     #[arg(long, global = true)]
     pub no_color: bool,
+}
+
+impl Commands {
+    /// Stable command name used in the JSON envelope `command` field and the
+    /// error reporter. Keep in sync with the variants below.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Config { .. } => "config",
+            Self::Price(_) => "price",
+            Self::Swap(_) => "swap",
+            Self::CrossChain(_) => "cross-chain",
+            Self::Status(_) => "status",
+            Self::Chains => "chains",
+            Self::Completions { .. } => "completions",
+            Self::Skill { .. } => "skill",
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -451,8 +470,8 @@ pub struct SwapArgs {
     #[arg(long)]
     pub amount: String,
 
-    /// Slippage tolerance in basis points (100 = 1%)
-    #[arg(long, default_value = "100")]
+    /// Slippage tolerance in basis points (100 = 1%, max 10000 = 100%)
+    #[arg(long, default_value = "100", value_parser = clap::value_parser!(u32).range(0..=10000))]
     pub slippage: u32,
 
     /// Use gasless swap (no gas needed; EVM only — ignored on Solana)
@@ -490,8 +509,8 @@ pub struct CrossChainArgs {
     #[arg(long)]
     pub amount: String,
 
-    /// Slippage tolerance in basis points (100 = 1%)
-    #[arg(long, default_value = "100")]
+    /// Slippage tolerance in basis points (100 = 1%, max 10000 = 100%)
+    #[arg(long, default_value = "100", value_parser = clap::value_parser!(u32).range(0..=10000))]
     pub slippage: u32,
 
     /// Sort quotes by price or speed

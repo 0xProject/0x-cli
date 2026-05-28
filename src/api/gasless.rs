@@ -1,6 +1,43 @@
 use super::ApiClient;
-use crate::error::CliError;
+use crate::error::{CliError, ErrorCode};
 use serde::{Deserialize, Serialize};
+
+fn no_liquidity_error() -> CliError {
+    CliError::Api {
+        code: ErrorCode::NoLiquidity,
+        message: "No liquidity available for this gasless pair".into(),
+        status: None,
+        details: None,
+        suggestion: Some("Try a different token pair or amount, or try without --gasless".into()),
+    }
+}
+
+/// Convert a raw gasless response into the typed struct. When the response is
+/// the reduced no-liquidity shape — either `{ liquidityAvailable: false }` (bool
+/// or string), or a response missing the trade/amount fields entirely —
+/// surface a clean `NoLiquidity` error instead of a parse failure.
+fn parse_gasless<T: serde::de::DeserializeOwned>(raw: serde_json::Value) -> Result<T, CliError> {
+    let liquidity = raw.get("liquidityAvailable");
+    let liquidity_false = matches!(liquidity, Some(serde_json::Value::Bool(false)))
+        || matches!(liquidity, Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("false"));
+    if liquidity_false {
+        return Err(no_liquidity_error());
+    }
+    // A 200 that lacks sellToken/buyToken means the API quietly degraded to
+    // the no-liquidity envelope without the explicit flag — also treat as
+    // NoLiquidity rather than a confusing parse error.
+    let missing_core_fields = raw.get("sellToken").is_none() || raw.get("buyToken").is_none();
+    if missing_core_fields {
+        return Err(no_liquidity_error());
+    }
+    serde_json::from_value(raw.clone()).map_err(|e| CliError::Api {
+        code: ErrorCode::ApiError,
+        message: format!("Failed to parse gasless response: {e}"),
+        status: None,
+        details: Some(serde_json::json!({ "body_preview": super::truncate_for_error(&raw.to_string()) })),
+        suggestion: None,
+    })
+}
 
 /// Gasless price response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,7 +177,8 @@ impl ApiClient {
             params.push(("taker", taker));
         }
 
-        self.get("/gasless/price", &params).await
+        let raw: serde_json::Value = self.get("/gasless/price", &params).await?;
+        parse_gasless(raw)
     }
 
     /// Get gasless quote
@@ -161,7 +199,8 @@ impl ApiClient {
             ("taker", taker),
         ];
 
-        self.get("/gasless/quote", &params).await
+        let raw: serde_json::Value = self.get("/gasless/quote", &params).await?;
+        parse_gasless(raw)
     }
 
     /// Submit a gasless swap

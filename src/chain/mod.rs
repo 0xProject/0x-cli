@@ -164,14 +164,6 @@ const CHAINS: &[ChainInfo] = &[
         chain_type: ChainType::Evm,
     },
     ChainInfo {
-        id: ChainId::Numeric(34443),
-        name: "mode",
-        display_name: "Mode",
-        native_token: "ETH",
-        explorer_url: "https://modescan.io",
-        chain_type: ChainType::Evm,
-    },
-    ChainInfo {
         id: ChainId::Numeric(80094),
         name: "berachain",
         display_name: "Berachain",
@@ -247,7 +239,8 @@ const CHAINS: &[ChainInfo] = &[
 
 /// Resolve a chain from a name or ID string.
 pub fn resolve_chain(input: &str) -> Result<&'static ChainInfo, CliError> {
-    let input_lower = input.to_lowercase();
+    let trimmed = input.trim();
+    let input_lower = trimmed.to_lowercase();
 
     // Try exact name match
     if let Some(chain) = CHAINS.iter().find(|c| c.name == input_lower) {
@@ -255,7 +248,7 @@ pub fn resolve_chain(input: &str) -> Result<&'static ChainInfo, CliError> {
     }
 
     // Try numeric ID match
-    if let Ok(id) = input.parse::<u64>() {
+    if let Ok(id) = trimmed.parse::<u64>() {
         if let Some(chain) = CHAINS
             .iter()
             .find(|c| matches!(c.id, ChainId::Numeric(cid) if cid == id))
@@ -295,6 +288,33 @@ pub fn validate_token_address(token: &str, chain_info: &ChainInfo) -> Result<(),
             suggestion: Some(
                 "Use the base58 mint address, e.g. EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v for USDC on Solana".into()
             ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate that an amount string is a positive base-unit integer.
+/// Rejects empty, signed, decimal, or non-digit input. Catches the common
+/// confusion of passing a human-formatted value like "0.5" instead of "500000".
+pub fn validate_base_unit_amount(amount: &str) -> Result<(), CliError> {
+    if amount.is_empty() || !amount.chars().all(|c| c.is_ascii_digit()) {
+        return Err(CliError::Api {
+            code: crate::error::ErrorCode::InputInvalid,
+            message: format!("'{amount}' is not a valid base-unit amount"),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "Pass the amount in base units as a positive integer, e.g. 1000000 = 1 USDC (6 decimals), 1000000000000000000 = 1 ETH (18 decimals)".into(),
+            ),
+        });
+    }
+    if amount.chars().all(|c| c == '0') {
+        return Err(CliError::Api {
+            code: crate::error::ErrorCode::InputInvalid,
+            message: "Amount must be greater than 0".into(),
+            status: None,
+            details: None,
+            suggestion: None,
         });
     }
     Ok(())

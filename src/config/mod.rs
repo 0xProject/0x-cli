@@ -6,8 +6,10 @@ use std::fs;
 use std::path::PathBuf;
 use types::AppConfig;
 
-/// Resolve the RPC URL for a chain: config (by name or numeric id) → built-in
-/// default for well-known chains. Errors when none of the above produces a URL.
+/// Resolve the RPC URL for a chain from the config file (by name or numeric
+/// id). Errors when no entry is set — we deliberately do NOT fall back to a
+/// public RPC, because the public endpoints throttle aggressively and return
+/// stale/cached state, which makes simulation and chain-id verification lie.
 /// The `--rpc-url` flag and `ZEROX_RPC_URL` env var are handled at the clap
 /// layer and reach this resolver via [`resolve_rpc_url_with_override`].
 pub fn resolve_rpc_url(config: &AppConfig, chain_info: &ChainInfo) -> Result<String, CliError> {
@@ -21,29 +23,19 @@ pub fn resolve_rpc_url(config: &AppConfig, chain_info: &ChainInfo) -> Result<Str
         }
     }
 
-    let default = match chain_info.name {
-        "ethereum" => Some("https://eth.llamarpc.com"),
-        "base" => Some("https://base.llamarpc.com"),
-        "arbitrum" => Some("https://arb1.arbitrum.io/rpc"),
-        "optimism" => Some("https://mainnet.optimism.io"),
-        "polygon" => Some("https://polygon-rpc.com"),
-        "bsc" => Some("https://bsc-dataseed.binance.org"),
-        "avalanche" => Some("https://api.avax.network/ext/bc/C/rpc"),
-        "solana" => Some("https://api.mainnet-beta.solana.com"),
-        _ => None,
-    };
-
-    default.map(|s| s.to_string()).ok_or_else(|| CliError::Config {
+    Err(CliError::Config {
         code: ErrorCode::ConfigNotFound,
         message: format!(
-            "No RPC URL configured for chain '{}'. Set one with: 0x config set rpc.{} <url>",
+            "No RPC URL configured for chain '{}'. Set one with: 0x config set rpc.{} <url>, or pass --rpc-url <url>",
             chain_info.display_name, chain_info.name
         ),
     })
 }
 
 /// Resolve the RPC URL, preferring the CLI override (`--rpc-url`) when set.
-/// Falls back to [`resolve_rpc_url`] (env → config → built-in default).
+/// Falls back to [`resolve_rpc_url`] (config → built-in default). The
+/// `ZEROX_RPC_URL` env var is consumed by clap at the flag layer, so it
+/// arrives here as the `override_url`.
 pub fn resolve_rpc_url_with_override(
     override_url: Option<&str>,
     config: &AppConfig,
@@ -77,11 +69,13 @@ pub fn config_file() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-/// Load configuration from disk, with environment variable overrides.
-pub fn load_config() -> Result<AppConfig, CliError> {
+/// Load configuration from disk only, with no environment-variable overrides.
+/// Use this in any write path (config set/unset/init) — the env-overlaid
+/// view from [`load_config`] would persist env-derived secrets back to disk
+/// on the next `save_config`.
+pub fn load_config_disk_only() -> Result<AppConfig, CliError> {
     let path = config_file();
-
-    let mut config = if path.exists() {
+    if path.exists() {
         let contents = fs::read_to_string(&path).map_err(|e| CliError::Config {
             code: ErrorCode::ConfigInvalid,
             message: format!("Failed to read config file: {e}"),
@@ -89,12 +83,20 @@ pub fn load_config() -> Result<AppConfig, CliError> {
         toml::from_str::<AppConfig>(&contents).map_err(|e| CliError::Config {
             code: ErrorCode::ConfigInvalid,
             message: format!("Failed to parse config file: {e}"),
-        })?
+        })
     } else {
-        AppConfig::default()
-    };
+        Ok(AppConfig::default())
+    }
+}
 
-    // Environment variable overrides
+/// Load configuration from disk and overlay environment variables.
+/// Use this for read/runtime paths (swap, price, status, etc.) where the
+/// caller will not persist the result. **Do not pass the result to
+/// `save_config`** — env-derived secrets would leak to disk.
+pub fn load_config() -> Result<AppConfig, CliError> {
+    let mut config = load_config_disk_only()?;
+
+    // Environment variable overrides — applied to the in-memory view only.
     if let Ok(key) = std::env::var("ZEROX_API_KEY") {
         config.api.api_key = Some(key);
     }
@@ -463,12 +465,14 @@ mod tests {
         let resolved = resolve_rpc_url_with_override(None, &config, base).unwrap();
         assert_eq!(resolved, "https://configured.example");
 
-        // 3. No override and no config → fall back to the built-in default.
+        // 3. No override and no config → Err (no public-RPC fallback).
         let empty = AppConfig::default();
-        let resolved = resolve_rpc_url_with_override(None, &empty, base).unwrap();
-        assert_eq!(resolved, "https://base.llamarpc.com");
+        assert!(resolve_rpc_url_with_override(None, &empty, base).is_err());
 
-        // 4. No override, no config, no default → Err.
+        // 4. Same case but try_ variant returns None.
+        assert!(try_resolve_rpc_url_with_override(None, &empty, base).is_none());
+
+        // 5. Unknown chain with no config → Err.
         let unknown = ChainInfo {
             id: ChainId::Numeric(999_999),
             name: "made-up-chain",
@@ -478,8 +482,6 @@ mod tests {
             chain_type: ChainType::Evm,
         };
         assert!(resolve_rpc_url_with_override(None, &empty, &unknown).is_err());
-
-        // 5. try_ variant returns None instead of Err for the same case.
         assert!(try_resolve_rpc_url_with_override(None, &empty, &unknown).is_none());
     }
 

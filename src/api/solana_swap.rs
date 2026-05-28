@@ -14,7 +14,6 @@ pub struct SolanaSwapRequest {
 
 /// Response from /solana/swap-instructions
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SolanaSwapResponse {
     pub instructions: Vec<ApiInstruction>,
     pub amount_out: u64,

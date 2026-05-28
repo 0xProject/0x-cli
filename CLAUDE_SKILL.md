@@ -231,7 +231,6 @@ Always inspect `error.retryable` before retrying. `retryable: false` codes (`SIM
 | 2741 | abstract | Abstract | ETH |
 | 5000 | mantle | Mantle | MNT |
 | 8453 | base | Base | ETH |
-| 34443 | mode | Mode | ETH |
 | 42161 | arbitrum | Arbitrum | ETH |
 | 43114 | avalanche | Avalanche | AVAX |
 | 57073 | ink | Ink | ETH |

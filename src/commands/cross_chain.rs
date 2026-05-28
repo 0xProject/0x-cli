@@ -1,13 +1,14 @@
-use crate::api::cross_chain::CrossChainQuotesResponse;
-use crate::api::types::{TokenAmount, TokenInfo};
+use crate::api::cross_chain::{CrossChainQuote, CrossChainQuotesResponse};
+use crate::api::types::{compute_rate, RouteSource, TokenAmount, TokenInfo};
 use crate::api::ApiClient;
 use crate::chain;
 use crate::cli::{CrossChainArgs, QuoteSort};
 use crate::config;
-use crate::confirm::{confirm_trade, ConfirmResult, TradeSummary};
+use crate::confirm::{confirm_or_preview, ConfirmFlow, TradeSummary};
 use crate::error::{CliError, ErrorCode};
 use crate::output::envelope::{Metadata, Warning};
 use crate::output::human::DataTable;
+use crate::output::trade::SideMeta;
 use crate::output::{HumanDisplay, OutputHandler};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -21,7 +22,11 @@ pub struct CrossChainOutput {
     pub buy_token: TokenInfo,
     pub sell_amount: TokenAmount,
     pub buy_amount: TokenAmount,
+    pub min_buy_amount: TokenAmount,
+    pub rate: String,
     pub bridge: String,
+    pub route: Vec<RouteSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_time_seconds: Option<u64>,
     pub status: String,
     pub terminal: bool,
@@ -54,8 +59,10 @@ impl HumanDisplay for CrossChainOutput {
 
         writeln!(writer, "  {:<14} {} → {}", "Route:", self.origin_chain, self.destination_chain)?;
         writeln!(writer, "  {:<14} {}", "Bridge:", self.bridge)?;
-        writeln!(writer, "  {:<14} {}", "Sell:", self.sell_amount.formatted)?;
-        writeln!(writer, "  {:<14} {}", "Buy:", self.buy_amount.formatted)?;
+        writeln!(writer, "  {:<14} {}", "Sell:", self.sell_amount.display())?;
+        writeln!(writer, "  {:<14} {}", "Buy:", self.buy_amount.display())?;
+        writeln!(writer, "  {:<14} {}", "Min Buy:", self.min_buy_amount.display())?;
+        writeln!(writer, "  {:<14} {}", "Rate:", self.rate)?;
         writeln!(writer, "  {:<14} {}", "Status:", self.status)?;
 
         if let Some(ref hash) = self.origin_tx_hash {
@@ -124,6 +131,7 @@ pub async fn run(
     // validate each against its own chain's address format.
     chain::validate_token_address(&args.sell, origin)?;
     chain::validate_token_address(&args.buy, destination)?;
+    chain::validate_base_unit_amount(&args.amount)?;
 
     let api_key = global
         .api_key
@@ -139,12 +147,7 @@ pub async fn run(
     let origin_wallet = OriginWallet::load(origin, &config, global.wallet.as_deref())?;
     let origin_address = origin_wallet.address();
 
-    let metadata = Metadata {
-        chain_id: origin.numeric_id(),
-        chain_name: Some(origin.display_name.to_string()),
-        ..Default::default()
-    };
-
+    let mut metadata = Metadata::for_chain(origin);
     let client = ApiClient::new(api_key, global.timeout)?;
 
     let sort_by = match args.sort {
@@ -153,7 +156,7 @@ pub async fn run(
     };
 
     // Step 1: Get quotes
-    let spinner = output.spinner("Fetching cross-chain quotes...");
+    let spinner = output.spinner_guard("Fetching cross-chain quotes...");
     let quotes_resp = client
         .get_cross_chain_quotes(
             &origin.api_chain_id(),
@@ -167,10 +170,7 @@ pub async fn run(
             Some(args.max_quotes),
         )
         .await?;
-
-    if let Some(s) = &spinner {
-        s.finish_and_clear();
-    }
+    drop(spinner);
 
     if quotes_resp.quotes.is_empty() || !quotes_resp.liquidity_available {
         return Err(CliError::Api {
@@ -181,6 +181,36 @@ pub async fn run(
             suggestion: Some("Try a different token pair, amount, or chain combination".into()),
         });
     }
+
+    metadata.zid = quotes_resp.zid.clone();
+
+    // Resolve sell/buy decimals for the origin/destination chains so amounts
+    // render correctly. EVM-only; Solana origin/destination falls back to
+    // unknown decimals (raw amount in output).
+    let mut token_cache = crate::token_cache::TokenCache::new();
+    let mut metadata_warnings: Vec<Warning> = Vec::new();
+    let sell_meta = resolve_one_evm(
+        &mut token_cache,
+        origin,
+        &args.sell,
+        global.rpc_url.as_deref(),
+        &config,
+        "sell",
+        &mut metadata_warnings,
+    )
+    .await;
+    let buy_meta = resolve_one_evm(
+        &mut token_cache,
+        destination,
+        &args.buy,
+        global.rpc_url.as_deref(),
+        &config,
+        "buy",
+        &mut metadata_warnings,
+    )
+    .await;
+    let sell = SideMeta::from_meta(args.sell.clone(), sell_meta);
+    let buy = SideMeta::from_meta(args.buy.clone(), buy_meta);
 
     // Step 2: Select quote
     let selected_idx = select_quote(args, output, &quotes_resp, global.yes)?;
@@ -197,52 +227,45 @@ pub async fn run(
     .row("Est Time", selected.estimated_time_display())
     .row("Slippage", format!("{:.2}%", args.slippage as f64 / 100.0));
 
-    match confirm_trade(output.format, global.yes, output.color, &summary)? {
-        ConfirmResult::Confirmed => {}
-        ConfirmResult::NeedsConfirmation => {
-            // Output selected quote for agent review
-            let preview = CrossChainOutput {
-                origin_chain: origin.display_name.to_string(),
-                destination_chain: destination.display_name.to_string(),
-                sell_token: TokenInfo { address: args.sell.clone(), symbol: None, decimals: None },
-                buy_token: TokenInfo { address: args.buy.clone(), symbol: None, decimals: None },
-                sell_amount: TokenAmount { raw: selected.sell_amount.clone(), formatted: selected.sell_amount.clone(), usd_value: None },
-                buy_amount: TokenAmount { raw: selected.buy_amount.clone(), formatted: selected.buy_amount.clone(), usd_value: None },
-                bridge: selected.bridge_provider(),
-                estimated_time_seconds: selected.estimated_time_seconds,
-                status: "needs_confirmation".into(),
-                terminal: false,
-                successful: false,
-                origin_tx_hash: None,
-                origin_explorer_url: None,
-                dry_run: false,
-            };
-            let _ = output.success("cross-chain", &preview, metadata, Vec::new());
-            return Ok(20);
-        }
+    let preview = cross_chain_output(
+        origin,
+        destination,
+        &sell,
+        &buy,
+        selected,
+        "needs_confirmation",
+        false,
+        false,
+        None,
+        false,
+    );
+    match confirm_or_preview(
+        output,
+        global.yes,
+        &summary,
+        "cross-chain",
+        &preview,
+        metadata.clone(),
+        metadata_warnings.clone(),
+    )? {
+        ConfirmFlow::Confirmed => {}
+        ConfirmFlow::PreviewEmitted => return Ok(25),
     }
 
     if global.dry_run {
-        let result = CrossChainOutput {
-            origin_chain: origin.display_name.to_string(),
-            destination_chain: destination.display_name.to_string(),
-            sell_token: TokenInfo { address: args.sell.clone(), symbol: None, decimals: None },
-            buy_token: TokenInfo { address: args.buy.clone(), symbol: None, decimals: None },
-            sell_amount: TokenAmount { raw: selected.sell_amount.clone(), formatted: selected.sell_amount.clone(), usd_value: None },
-            buy_amount: TokenAmount { raw: selected.buy_amount.clone(), formatted: selected.buy_amount.clone(), usd_value: None },
-            bridge: selected.bridge_provider(),
-            estimated_time_seconds: selected.estimated_time_seconds,
-            status: "dry_run".into(),
-            terminal: true,
-            successful: true,
-            origin_tx_hash: None,
-            origin_explorer_url: None,
-            dry_run: true,
-        };
-        return output
-            .success("cross-chain", &result, metadata, Vec::new())
-            .map(|_| 30)
-            .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()));
+        let result = cross_chain_output(
+            origin,
+            destination,
+            &sell,
+            &buy,
+            selected,
+            "dry_run",
+            true,
+            true,
+            None,
+            true,
+        );
+        return Ok(output.emit_success("cross-chain", &result, metadata, metadata_warnings, 30));
     }
 
     // Step 4: Handle allowance if needed (EVM origin)
@@ -262,12 +285,13 @@ pub async fn run(
 
                 crate::chain::evm::EvmExecutor::ensure_allowance(
                     &origin_rpc,
+                    origin.numeric_id().unwrap_or_default(),
                     signer.clone(),
                     &args.sell,
                     &allowance.spender,
                     &selected.sell_amount,
                     crate::cli::ApprovalStrategy::Exact,
-                    false,
+                    global.dry_run,
                     &|status| { output.info(status); },
                 )
                 .await?;
@@ -276,7 +300,7 @@ pub async fn run(
     }
 
     // Step 5: Execute origin transaction
-    let spinner = output.spinner("Sending origin transaction...");
+    let spinner = output.spinner_guard("Sending origin transaction...");
 
     let origin_tx_hash = if selected.transaction.chain_type == "evm" {
         // EVM origin: use alloy provider
@@ -293,6 +317,7 @@ pub async fn run(
 
         let result = crate::chain::evm::EvmExecutor::execute_swap(
             &rpc_url,
+            origin.numeric_id().unwrap_or_default(),
             signer.clone(),
             &args.sell,
             None, // Already handled allowance
@@ -305,16 +330,32 @@ pub async fn run(
             details.gas_price.as_deref(),
             false,
             &|status| {
-                if let Some(s) = &spinner {
-                    s.set_message(status.to_string());
-                }
+                spinner.set_message(status.to_string());
             },
         )
         .await?;
 
         match result {
             crate::chain::evm::SwapResult::Success(receipt) => receipt.tx_hash,
-            _ => unreachable!(),
+            // dry_run was hard-coded false above, so DryRun shouldn't happen.
+            // Preview is only produced by the standalone `0x swap` confirmation
+            // flow, not the cross-chain executor. If either appears here it's
+            // an executor refactor regression — surface it as an internal
+            // error rather than panicking the binary.
+            crate::chain::evm::SwapResult::DryRun
+            | crate::chain::evm::SwapResult::Preview => {
+                return Err(CliError::Api {
+                    code: ErrorCode::ApiError,
+                    message:
+                        "Internal error: cross-chain origin executor returned a non-Success result"
+                            .into(),
+                    status: None,
+                    details: None,
+                    suggestion: Some(
+                        "This is a bug. Re-run with --verbose and report the trace.".into(),
+                    ),
+                });
+            }
         }
     } else if selected.transaction.chain_type == "svm" {
         // Solana origin: deserialize and sign pre-built transaction
@@ -366,21 +407,17 @@ pub async fn run(
         });
     };
 
-    if let Some(s) = &spinner {
-        s.finish_and_clear();
-    }
+    drop(spinner);
 
     output.info(&format!("Origin tx: {origin_tx_hash}"));
 
     // Step 6: Poll bridge status
-    let spinner = output.spinner("Tracking bridge status...");
+    let spinner = output.spinner_guard("Tracking bridge status...");
     let origin_chain_id = origin.api_chain_id();
     let final_status = crate::api::poll::poll_until_terminal(
         crate::api::poll::PollConfig::new(5, 600, ErrorCode::BridgeTimeout),
         |elapsed, status: &crate::api::cross_chain::CrossChainStatusResponse| {
-            if let Some(s) = &spinner {
-                s.set_message(format!("Status: {} ({}s)", status.status, elapsed));
-            }
+            spinner.set_message(format!("Status: {} ({}s)", status.status, elapsed));
         },
         || client.get_cross_chain_status(&origin_chain_id, &origin_tx_hash),
         |s| s.is_terminal(),
@@ -393,39 +430,32 @@ pub async fn run(
     )
     .await?;
 
-    if let Some(s) = spinner {
-        s.finish_and_clear();
-    }
+    drop(spinner);
 
-    let origin_explorer_url = Some(origin.explorer_tx_url(&origin_tx_hash));
-    let result = CrossChainOutput {
-        origin_chain: origin.display_name.to_string(),
-        destination_chain: destination.display_name.to_string(),
-        sell_token: TokenInfo { address: args.sell.clone(), symbol: None, decimals: None },
-        buy_token: TokenInfo { address: args.buy.clone(), symbol: None, decimals: None },
-        sell_amount: TokenAmount { raw: selected.sell_amount.clone(), formatted: selected.sell_amount.clone(), usd_value: None },
-        buy_amount: TokenAmount { raw: selected.buy_amount.clone(), formatted: selected.buy_amount.clone(), usd_value: None },
-        bridge: selected.bridge_provider(),
-        estimated_time_seconds: selected.estimated_time_seconds,
-        status: final_status.status.clone(),
-        terminal: final_status.is_terminal(),
-        successful: final_status.is_successful(),
-        origin_tx_hash: Some(origin_tx_hash),
-        origin_explorer_url,
-        dry_run: false,
-    };
+    let origin_explorer_url = origin.explorer_tx_url(&origin_tx_hash);
+    let result = cross_chain_output(
+        origin,
+        destination,
+        &sell,
+        &buy,
+        selected,
+        &final_status.status,
+        final_status.is_terminal(),
+        final_status.is_successful(),
+        Some((origin_tx_hash, origin_explorer_url)),
+        false,
+    );
 
-    let mut warnings = Vec::new();
+    let mut warnings = metadata_warnings;
     if !final_status.is_successful() {
         warnings.push(Warning {
             code: "BRIDGE_FAILED".into(),
-            message: final_status.failure_reason.unwrap_or_else(|| format!("Bridge ended with status: {}", final_status.status)),
+            message: final_status.failure_reason.clone().unwrap_or_else(|| format!("Bridge ended with status: {}", final_status.status)),
         });
     }
 
-    output
-        .success("cross-chain", &result, metadata, warnings)
-        .map_err(|e| CliError::config(ErrorCode::Unknown, e.to_string()))
+    let exit_code = if final_status.is_successful() { 0 } else { 11 };
+    Ok(output.emit_success("cross-chain", &result, metadata, warnings, exit_code))
 }
 
 /// A loaded origin wallet — exactly one of EVM or Solana, depending on the
@@ -520,7 +550,28 @@ fn select_quote(
         return Ok(0);
     }
 
-    // Interactive selection
+    // Non-Human output formats can't drive an interactive prompt — fall back
+    // to the first quote and surface a hint via the regular error/output path
+    // instead of hanging on dialoguer.
+    if !matches!(output.format, crate::cli::OutputFormat::Human) {
+        if resp.quotes.len() > 1 {
+            return Err(CliError::Api {
+                code: ErrorCode::InputInvalid,
+                message: format!(
+                    "{} quotes returned but no --select-quote provided in non-interactive output mode",
+                    resp.quotes.len()
+                ),
+                status: None,
+                details: None,
+                suggestion: Some(
+                    "Re-run with --select-quote <index|best-price|fastest> or --yes to auto-select the first".into(),
+                ),
+            });
+        }
+        return Ok(0);
+    }
+
+    // Interactive selection (Human output only)
     let display = QuotesDisplay {
         quotes: resp
             .quotes
@@ -562,4 +613,79 @@ fn select_quote(
     }
 
     Ok(selection)
+}
+
+/// Resolve token metadata for one side of a cross-chain swap. Solana
+/// origins/destinations return None (no on-chain metadata lookup); EVM sides
+/// hit the configured RPC and push a `TOKEN_METADATA_UNRESOLVED` warning when
+/// the lookup fails. Replaces the near-duplicated blocks in `run`.
+async fn resolve_one_evm(
+    cache: &mut crate::token_cache::TokenCache,
+    chain_info: &chain::ChainInfo,
+    token: &str,
+    rpc_override: Option<&str>,
+    config: &config::types::AppConfig,
+    side_label: &str,
+    warnings: &mut Vec<Warning>,
+) -> Option<crate::token_cache::TokenMeta> {
+    if !chain_info.is_evm() {
+        return None;
+    }
+    let rpc = config::try_resolve_rpc_url_with_override(rpc_override, config, chain_info);
+    let chain_id = chain_info.numeric_id().unwrap_or(0);
+    let result = match rpc.as_deref() {
+        Some(u) => cache.resolve_evm(u, chain_id, token).await,
+        None => None,
+    };
+    if result.is_none() {
+        warnings.push(Warning {
+            code: crate::token_cache::WARN_METADATA_UNRESOLVED.into(),
+            message: format!(
+                "Could not resolve metadata for {side_label} token on {}. Showing raw amount.",
+                chain_info.display_name
+            ),
+        });
+    }
+    result
+}
+
+/// Assemble a `CrossChainOutput` from the selected quote + outcome. Used by
+/// the needs-confirmation, dry-run, and final-status paths.
+#[allow(clippy::too_many_arguments)]
+fn cross_chain_output(
+    origin: &chain::ChainInfo,
+    destination: &chain::ChainInfo,
+    sell: &SideMeta,
+    buy: &SideMeta,
+    selected: &CrossChainQuote,
+    status: &str,
+    terminal: bool,
+    successful: bool,
+    origin_tx: Option<(String, String)>,
+    dry_run: bool,
+) -> CrossChainOutput {
+    let (origin_tx_hash, origin_explorer_url) = match origin_tx {
+        Some((hash, explorer)) => (Some(hash), Some(explorer)),
+        None => (None, None),
+    };
+
+    CrossChainOutput {
+        origin_chain: origin.display_name.to_string(),
+        destination_chain: destination.display_name.to_string(),
+        sell_token: sell.token_info(),
+        buy_token: buy.token_info(),
+        sell_amount: sell.amount(&selected.sell_amount),
+        buy_amount: buy.amount(&selected.buy_amount),
+        min_buy_amount: buy.amount(&selected.min_buy_amount),
+        rate: compute_rate(&selected.sell_amount, &selected.buy_amount),
+        bridge: selected.bridge_provider(),
+        route: Vec::new(),
+        estimated_time_seconds: selected.estimated_time_seconds,
+        status: status.to_string(),
+        terminal,
+        successful,
+        origin_tx_hash,
+        origin_explorer_url,
+        dry_run,
+    }
 }

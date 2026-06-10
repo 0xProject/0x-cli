@@ -1,6 +1,4 @@
-use crate::api::gasless::{
-    GaslessSubmitRequest, GaslessSubmitSignable, SignatureSplit,
-};
+use crate::api::gasless::{GaslessSubmitRequest, GaslessSubmitSignable, SignatureSplit};
 use crate::api::types::{display_amount, TokenAmount, TokenInfo};
 use crate::api::ApiClient;
 use crate::chain::{self};
@@ -12,11 +10,14 @@ use crate::output::envelope::{Metadata, Warning};
 use crate::output::trade::SideMeta;
 use crate::output::{HumanDisplay, OutputHandler};
 use crate::token_cache::{resolve_pair_evm, TokenCache};
+use alloy::primitives::{Address, U256};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::SignerSync;
 use alloy_dyn_abi::eip712::TypedData;
 use serde::Serialize;
 use std::io::{self, Write};
+use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Gasless swap result.
 #[derive(Debug, Serialize)]
@@ -55,18 +56,42 @@ impl HumanDisplay for GaslessSwapOutput {
                 writeln!(writer, "\n  Gasless Swap Complete")?;
             }
         } else if color {
-            writeln!(writer, "\n  {}", format!("Gasless Swap: {}", self.status).bold())?;
+            writeln!(
+                writer,
+                "\n  {}",
+                format!("Gasless Swap: {}", self.status).bold()
+            )?;
         } else {
             writeln!(writer, "\n  Gasless Swap: {}", self.status)?;
         }
 
         writeln!(writer, "  {}", "-".repeat(45))?;
 
-        let sell_label = self.sell_token.symbol.as_deref().unwrap_or(&self.sell_token.address);
-        let buy_label = self.buy_token.symbol.as_deref().unwrap_or(&self.buy_token.address);
+        let sell_label = self
+            .sell_token
+            .symbol
+            .as_deref()
+            .unwrap_or(&self.sell_token.address);
+        let buy_label = self
+            .buy_token
+            .symbol
+            .as_deref()
+            .unwrap_or(&self.buy_token.address);
 
-        writeln!(writer, "  {:<14} {} {}", "Sell:", self.sell_amount.display(), sell_label)?;
-        writeln!(writer, "  {:<14} {} {}", "Buy:", self.buy_amount.display(), buy_label)?;
+        writeln!(
+            writer,
+            "  {:<14} {} {}",
+            "Sell:",
+            self.sell_amount.display(),
+            sell_label
+        )?;
+        writeln!(
+            writer,
+            "  {:<14} {} {}",
+            "Buy:",
+            self.buy_amount.display(),
+            buy_label
+        )?;
         writeln!(writer, "  {:<14} {}", "Trade Hash:", self.trade_hash)?;
         writeln!(writer, "  {:<14} {}", "Status:", self.status)?;
 
@@ -159,9 +184,11 @@ pub async fn run_gasless(
         false,
         false,
     );
+    // Dry-run bypasses the confirmation gate (read-only path, nothing to sign).
+    let auto_confirm = global.yes || global.dry_run;
     match confirm_or_preview(
         output,
-        global.yes,
+        auto_confirm,
         &summary,
         "swap",
         &preview,
@@ -196,11 +223,13 @@ pub async fn run_gasless(
     let spinner = output.spinner_guard("Signing trade...");
 
     let approval_signable = if let Some(ref approval) = quote.approval {
-        validate_signable_domain(&approval.eip712, chain_id, "approval", &mut metadata_warnings)?;
-        validate_approval_message(
+        validate_approval(
+            &approval.signable_type,
             &approval.eip712,
             &quote.sell_token,
             &quote.sell_amount,
+            signer.address(),
+            chain_id,
         )?;
         let sig = sign_eip712(&signer, &approval.eip712)?;
         Some(GaslessSubmitSignable {
@@ -221,7 +250,11 @@ pub async fn run_gasless(
         suggestion: None,
     })?;
 
-    validate_signable_domain(&trade.eip712, chain_id, "trade", &mut metadata_warnings)?;
+    validate_trade_domain(&trade.eip712, &trade.signable_type, chain_id)?;
+    // Bind the Permit2 trade signable to the quote's sellToken/sellAmount
+    // so a tampered API response can't reroute the trade to a different
+    // asset between quote and signature.
+    validate_trade_permitted(&trade.eip712, &quote.sell_token, &quote.sell_amount)?;
 
     let trade_sig = sign_eip712(&signer, &trade.eip712)?;
     let trade_signable = GaslessSubmitSignable {
@@ -248,8 +281,13 @@ pub async fn run_gasless(
 
     // Step 5: Poll status
     let spinner = output.spinner_guard("Waiting for confirmation...");
-    let final_status =
-        poll_gasless_status(&client, &submit_resp.trade_hash, chain_id, spinner.progress_bar()).await?;
+    let final_status = poll_gasless_status(
+        &client,
+        &submit_resp.trade_hash,
+        chain_id,
+        spinner.progress_bar(),
+    )
+    .await?;
     drop(spinner);
 
     let tx_hash = final_status
@@ -257,9 +295,7 @@ pub async fn run_gasless(
         .first()
         .and_then(|t| t.hash.clone());
 
-    let explorer_url = tx_hash
-        .as_ref()
-        .map(|h| chain_info.explorer_tx_url(h));
+    let explorer_url = tx_hash.as_ref().map(|h| chain_info.explorer_tx_url(h));
 
     // `poll_gasless_status` only returns Ok on a terminal state, so we know
     // `final_status.is_terminal()` is true here. Non-terminal states surface
@@ -335,29 +371,32 @@ fn sign_eip712(
     signer: &PrivateKeySigner,
     eip712_json: &serde_json::Value,
 ) -> Result<SignatureSplit, CliError> {
-    let typed_data: TypedData = serde_json::from_value(eip712_json.clone()).map_err(|e| {
-        CliError::Transaction {
+    let typed_data: TypedData =
+        serde_json::from_value(eip712_json.clone()).map_err(|e| CliError::Transaction {
             code: ErrorCode::SigningFailed,
             message: format!("Failed to parse EIP-712 typed data: {e}"),
             tx_hash: None,
             suggestion: None,
-        }
-    })?;
+        })?;
 
     // Compute EIP-712 signing hash and sign synchronously
-    let hash = typed_data.eip712_signing_hash().map_err(|e| CliError::Transaction {
-        code: ErrorCode::SigningFailed,
-        message: format!("Failed to compute EIP-712 hash: {e}"),
-        tx_hash: None,
-        suggestion: None,
-    })?;
+    let hash = typed_data
+        .eip712_signing_hash()
+        .map_err(|e| CliError::Transaction {
+            code: ErrorCode::SigningFailed,
+            message: format!("Failed to compute EIP-712 hash: {e}"),
+            tx_hash: None,
+            suggestion: None,
+        })?;
 
-    let signature = signer.sign_hash_sync(&hash).map_err(|e| CliError::Transaction {
-        code: ErrorCode::SigningFailed,
-        message: format!("Failed to sign EIP-712 data: {e}"),
-        tx_hash: None,
-        suggestion: None,
-    })?;
+    let signature = signer
+        .sign_hash_sync(&hash)
+        .map_err(|e| CliError::Transaction {
+            code: ErrorCode::SigningFailed,
+            message: format!("Failed to sign EIP-712 data: {e}"),
+            tx_hash: None,
+            suggestion: None,
+        })?;
 
     // Take v from the canonical 65-byte secp256k1 encoding — alloy's
     // `Signature::as_bytes()` writes `[r(32) || s(32) || v(1)]` with v already
@@ -385,23 +424,24 @@ const EIP712_SIGNATURE_TYPE: u8 = 2;
 /// to grant allowance to an unknown contract.
 const PERMIT2_ADDRESS: &str = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 
-/// Reject an EIP-712 payload whose `domain.chainId` doesn't match the chain
-/// we expected to sign on, or that we cannot parse a chainId out of at all.
-/// Warns (but doesn't reject) when `verifyingContract` is not Permit2 — the
-/// trade-side payload is signed against the 0x Settler, which is chain-specific
-/// and we don't carry an exhaustive allowlist.
-fn validate_signable_domain(
+/// Shared piece for both approval and trade domain checks: pull
+/// `domain.{chainId, verifyingContract}` out of an EIP-712 payload, enforce
+/// the chainId binding, and confirm the `verifyingContract` is present
+/// and address-shaped. Returns the contract string verbatim so callers can
+/// add their own type-specific equality checks.
+fn extract_domain_verifying_contract(
     eip712: &serde_json::Value,
     expected_chain_id: u64,
     payload_kind: &str,
-    warnings: &mut Vec<Warning>,
-) -> Result<(), CliError> {
+) -> Result<String, CliError> {
     let domain = eip712.get("domain").ok_or_else(|| CliError::Api {
         code: ErrorCode::InvalidSignature,
         message: format!("Gasless {payload_kind} EIP-712 is missing a `domain` field"),
         status: None,
         details: None,
-        suggestion: Some("This is an API contract violation — retry; if it persists, contact 0x support".into()),
+        suggestion: Some(
+            "This is an API contract violation — retry; if it persists, contact 0x support".into(),
+        ),
     })?;
 
     let domain_chain_id = match domain.get("chainId") {
@@ -434,55 +474,122 @@ fn validate_signable_domain(
     let verifying_contract = domain
         .get("verifyingContract")
         .and_then(|v| v.as_str())
-        .unwrap_or_default();
-
-    let is_approval = payload_kind == "approval";
-    if is_approval && !verifying_contract.eq_ignore_ascii_case(PERMIT2_ADDRESS) {
-        return Err(CliError::Api {
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| CliError::Api {
             code: ErrorCode::InvalidSignature,
             message: format!(
-                "Gasless approval verifyingContract={verifying_contract} is not canonical Permit2 ({PERMIT2_ADDRESS}) — refusing to sign"
+                "Gasless {payload_kind} EIP-712 domain.verifyingContract is missing or empty — refusing to sign"
             ),
             status: None,
             details: None,
             suggestion: Some(
-                "An approval to a non-Permit2 contract could grant allowance to an arbitrary spender. Contact 0x support.".into(),
+                "Without a verifyingContract the signature isn't bound to a counterparty. Re-fetch the quote; if it persists, contact 0x support.".into(),
+            ),
+        })?;
+
+    if !is_address_shaped(verifying_contract) {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "Gasless {payload_kind} verifyingContract '{verifying_contract}' isn't a 20-byte hex address — refusing to sign"
+            ),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "The API returned a malformed verifyingContract. Re-fetch the quote; if it persists, contact 0x support.".into(),
             ),
         });
     }
-    if !is_approval && !verifying_contract.starts_with("0x") {
-        warnings.push(Warning {
-            code: "EIP712_DOMAIN_UNRECOGNIZED".into(),
+    Ok(verifying_contract.to_string())
+}
+
+/// Approval-side domain check. Unlike the trade payload, an approval's
+/// `verifyingContract` is the **token contract itself** — pinning it to
+/// the quote's sell_token is what stops a tampered API response from
+/// having the user grant allowance on a different token.
+fn validate_approval_domain(
+    eip712: &serde_json::Value,
+    sell_token: &str,
+    chain_id: u64,
+) -> Result<(), CliError> {
+    let vc = extract_domain_verifying_contract(eip712, chain_id, "approval")?;
+    if !vc.eq_ignore_ascii_case(sell_token) {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
             message: format!(
-                "Trade verifyingContract '{verifying_contract}' is not a recognized address; proceeding because chainId matched."
+                "Gasless approval verifyingContract={vc} doesn't match the quote's sell_token={sell_token} — refusing to sign"
+            ),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "An approval to a non-matching token would grant allowance for the wrong asset. Re-fetch the quote; if it persists, contact 0x support.".into(),
             ),
         });
     }
     Ok(())
 }
 
-/// Validate that an approval EIP-712 actually authorizes the token and amount
-/// we asked the API to quote — guards against a tampered response that tries
-/// to permit a different token (or unlimited amount). Fails closed: if we
-/// can't extract the `permitted.{token,amount}` fields the approval cannot be
-/// cross-checked and we refuse to sign.
-fn validate_approval_message(
+/// Trade-side domain check. The 0x gasless trade is always a Permit2
+/// `PermitTransferFrom`, so when the API tags the signable as `Permit2`
+/// we additionally enforce the canonical Permit2 address. Any other tag
+/// is allowed to pass as long as it's address-shaped — the surrounding
+/// code doesn't yet support non-Permit2 trades but we don't want to fail
+/// hard if the API evolves; the type-specific permitted check below
+/// covers the actual binding.
+fn validate_trade_domain(
+    eip712: &serde_json::Value,
+    signable_type: &str,
+    chain_id: u64,
+) -> Result<(), CliError> {
+    let vc = extract_domain_verifying_contract(eip712, chain_id, "trade")?;
+    if signable_type.eq_ignore_ascii_case("Permit2") && !vc.eq_ignore_ascii_case(PERMIT2_ADDRESS) {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "Gasless trade signable_type=Permit2 but verifyingContract={vc} is not canonical Permit2 ({PERMIT2_ADDRESS}) — refusing to sign"
+            ),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "A Permit2 signable bound to the wrong contract could redirect funds. Re-fetch the quote; if it persists, contact 0x support.".into(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Loose check: 0x-prefixed, 42 chars, hex body. Used as a sanity guard on
+/// EIP-712 `verifyingContract` fields. Not a full EIP-55 checksum check
+/// (those are case-sensitive and the 0x API doesn't always checksum its
+/// addresses).
+fn is_address_shaped(s: &str) -> bool {
+    s.len() == 42 && s.starts_with("0x") && s[2..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `approve(address,uint256)` selector — the only metatx wrapper we accept
+/// for `executeMetaTransaction::approve`.
+const ERC20_APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
+
+/// Validate the trade-side Permit2 `PermitTransferFrom` message: the
+/// `message.permitted.{token, amount}` fields must match the quote so the
+/// trade can't be silently rebound to a different token/amount before
+/// signature. Fails closed: missing fields → refuse.
+fn validate_trade_permitted(
     eip712: &serde_json::Value,
     expected_token: &str,
     expected_amount: &str,
 ) -> Result<(), CliError> {
-    // Permit2 PermitTransferFrom shape: { permitted: { token, amount }, ... }.
     let permitted = eip712
         .get("message")
         .and_then(|m| m.get("permitted"))
         .ok_or_else(|| CliError::Api {
             code: ErrorCode::InvalidSignature,
-            message: "Gasless approval EIP-712 is missing `message.permitted` — refusing to sign"
+            message: "Gasless trade EIP-712 is missing `message.permitted` — refusing to sign"
                 .into(),
             status: None,
             details: None,
             suggestion: Some(
-                "Without the permit fields we can't verify what we're approving. Re-fetch the quote; if it persists, contact 0x support.".into(),
+                "Without the permit fields we can't verify what we're trading. Re-fetch the quote; if it persists, contact 0x support.".into(),
             ),
         })?;
 
@@ -491,31 +598,25 @@ fn validate_approval_message(
         .and_then(|v| v.as_str())
         .ok_or_else(|| CliError::Api {
             code: ErrorCode::InvalidSignature,
-            message: "Gasless approval EIP-712 `permitted.token` is missing or not a string — refusing to sign".into(),
+            message: "Gasless trade EIP-712 `permitted.token` is missing or not a string — refusing to sign".into(),
             status: None,
             details: None,
             suggestion: Some("Re-fetch the quote; if it persists, contact 0x support.".into()),
         })?;
 
-    let msg_amount = match permitted.get("amount") {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Number(n)) => n.to_string(),
-        _ => {
-            return Err(CliError::Api {
-                code: ErrorCode::InvalidSignature,
-                message: "Gasless approval EIP-712 `permitted.amount` is missing or not a string/number — refusing to sign".into(),
-                status: None,
-                details: None,
-                suggestion: Some("Re-fetch the quote; if it persists, contact 0x support.".into()),
-            });
-        }
-    };
+    let msg_amount = read_uint_string(permitted, "amount").ok_or_else(|| CliError::Api {
+        code: ErrorCode::InvalidSignature,
+        message: "Gasless trade EIP-712 `permitted.amount` is missing or not a string/number — refusing to sign".into(),
+        status: None,
+        details: None,
+        suggestion: Some("Re-fetch the quote; if it persists, contact 0x support.".into()),
+    })?;
 
     if !msg_token.eq_ignore_ascii_case(expected_token) {
         return Err(CliError::Api {
             code: ErrorCode::InvalidSignature,
             message: format!(
-                "Gasless approval message permits token {msg_token} but the quote was for {expected_token} — refusing to sign"
+                "Gasless trade message permits token {msg_token} but the quote was for {expected_token} — refusing to sign"
             ),
             status: None,
             details: None,
@@ -528,7 +629,7 @@ fn validate_approval_message(
         return Err(CliError::Api {
             code: ErrorCode::InvalidSignature,
             message: format!(
-                "Gasless approval message permits amount {msg_amount} but the quote was for {expected_amount} — refusing to sign"
+                "Gasless trade message permits amount {msg_amount} but the quote was for {expected_amount} — refusing to sign"
             ),
             status: None,
             details: None,
@@ -540,6 +641,317 @@ fn validate_approval_message(
     Ok(())
 }
 
+/// Dispatcher for the approval payload. Validates domain (chainId +
+/// verifyingContract == sell_token), then routes to the per-type message
+/// validator based on `signable_type`. Unknown types refuse fail-closed
+/// per the user's policy: a future API addition shouldn't be silently
+/// signed by an older CLI.
+fn validate_approval(
+    signable_type: &str,
+    eip712: &serde_json::Value,
+    sell_token: &str,
+    sell_amount: &str,
+    signer_addr: Address,
+    chain_id: u64,
+) -> Result<(), CliError> {
+    validate_approval_domain(eip712, sell_token, chain_id)?;
+    let expected_amount = parse_uint(sell_amount).ok_or_else(|| CliError::Api {
+        code: ErrorCode::InvalidSignature,
+        message: format!("Quote sellAmount '{sell_amount}' is not a parseable uint — cannot cross-check the approval"),
+        status: None,
+        details: None,
+        suggestion: None,
+    })?;
+    match signable_type {
+        "permit" => validate_permit_message(eip712, signer_addr, expected_amount),
+        "daiPermit" => validate_dai_permit_message(eip712, signer_addr),
+        "executeMetaTransaction::approve" => {
+            validate_metatx_approve_message(eip712, signer_addr, expected_amount)
+        }
+        other => Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "Unknown gasless approval signable_type '{other}' — refusing to sign"
+            ),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "This may be a newer approval mechanism the CLI hasn't been updated for. Update the CLI or contact 0x support.".into(),
+            ),
+        }),
+    }
+}
+
+/// EIP-2612 `permit`: { owner, spender, value, nonce, deadline }.
+fn validate_permit_message(
+    eip712: &serde_json::Value,
+    signer_addr: Address,
+    expected_amount: U256,
+) -> Result<(), CliError> {
+    let msg = eip712
+        .get("message")
+        .ok_or_else(|| missing_message_err("permit"))?;
+    require_address(msg, "owner", signer_addr, "permit owner")?;
+    let value = read_uint(msg, "value").ok_or_else(|| missing_field_err("permit", "value"))?;
+    if value < expected_amount {
+        return Err(amount_too_small_err(
+            "permit",
+            "value",
+            value,
+            expected_amount,
+        ));
+    }
+    let deadline =
+        read_uint(msg, "deadline").ok_or_else(|| missing_field_err("permit", "deadline"))?;
+    require_future_deadline("permit", "deadline", deadline)?;
+    Ok(())
+}
+
+/// DAI's pre-EIP-2612 `daiPermit`:
+/// { holder, spender, nonce, expiry, allowed }.
+/// daiPermit is a boolean-allowance permit — it doesn't carry an explicit
+/// amount; granting it gives `spender` unbounded DAI allowance until
+/// `expiry`. We refuse the `allowed=false` form (revoke) and the
+/// `expiry=0` form (no expiry — effectively unlimited).
+fn validate_dai_permit_message(
+    eip712: &serde_json::Value,
+    signer_addr: Address,
+) -> Result<(), CliError> {
+    let msg = eip712
+        .get("message")
+        .ok_or_else(|| missing_message_err("daiPermit"))?;
+    require_address(msg, "holder", signer_addr, "daiPermit holder")?;
+    let allowed = msg
+        .get("allowed")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| missing_field_err("daiPermit", "allowed"))?;
+    if !allowed {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: "Gasless daiPermit message has allowed=false (revoke) — refusing to sign".into(),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "Signing a revoke during a swap would be a no-op trade plus wasted signature. Re-fetch the quote; if it persists, contact 0x support.".into(),
+            ),
+        });
+    }
+    let expiry =
+        read_uint(msg, "expiry").ok_or_else(|| missing_field_err("daiPermit", "expiry"))?;
+    if expiry == U256::ZERO {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: "Gasless daiPermit has expiry=0 (no time limit on the unlimited allowance) — refusing to sign".into(),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "0x's gasless flow should always issue time-bounded permits. Re-fetch the quote; if it persists, contact 0x support.".into(),
+            ),
+        });
+    }
+    require_future_deadline("daiPermit", "expiry", expiry)?;
+    Ok(())
+}
+
+/// Polygon-style meta-transaction wrapping an ERC-20 `approve(spender, amount)`:
+/// { nonce, from, functionSignature }. The encoded functionSignature must
+/// be exactly 4 bytes of `0x095ea7b3` selector + 32 bytes spender +
+/// 32 bytes amount (68 bytes total). Anything else is a different call
+/// being smuggled through and we refuse it.
+fn validate_metatx_approve_message(
+    eip712: &serde_json::Value,
+    signer_addr: Address,
+    expected_amount: U256,
+) -> Result<(), CliError> {
+    let msg = eip712
+        .get("message")
+        .ok_or_else(|| missing_message_err("executeMetaTransaction::approve"))?;
+    require_address(
+        msg,
+        "from",
+        signer_addr,
+        "executeMetaTransaction::approve from",
+    )?;
+    let sig_str = msg
+        .get("functionSignature")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| missing_field_err("executeMetaTransaction::approve", "functionSignature"))?;
+    let sig_hex = sig_str
+        .strip_prefix("0x")
+        .or_else(|| sig_str.strip_prefix("0X"))
+        .unwrap_or(sig_str);
+    let bytes = hex::decode(sig_hex).map_err(|_| CliError::Api {
+        code: ErrorCode::InvalidSignature,
+        message: format!(
+            "executeMetaTransaction::approve functionSignature '{sig_str}' is not valid hex — refusing to sign"
+        ),
+        status: None,
+        details: None,
+        suggestion: None,
+    })?;
+    if bytes.len() != 4 + 32 + 32 {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "executeMetaTransaction::approve functionSignature is {} bytes; expected 68 (selector + address + uint256) — refusing to sign",
+                bytes.len()
+            ),
+            status: None,
+            details: None,
+            suggestion: Some("The API returned a non-`approve` metatx — that would call a different function. Contact 0x support.".into()),
+        });
+    }
+    if bytes[..4] != ERC20_APPROVE_SELECTOR {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "executeMetaTransaction::approve functionSignature selector is 0x{} (not approve 0x095ea7b3) — refusing to sign",
+                hex::encode(&bytes[..4])
+            ),
+            status: None,
+            details: None,
+            suggestion: Some("Signing this metatx would call something other than ERC-20 approve. Contact 0x support.".into()),
+        });
+    }
+    let amount = U256::from_be_slice(&bytes[4 + 32..]);
+    if amount < expected_amount {
+        return Err(amount_too_small_err(
+            "executeMetaTransaction::approve",
+            "encoded amount",
+            amount,
+            expected_amount,
+        ));
+    }
+    Ok(())
+}
+
+// ── Shared helpers used by the per-type validators ──────────────────────
+
+fn read_uint_string(msg: &serde_json::Value, field: &str) -> Option<String> {
+    match msg.get(field)? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn parse_uint(s: &str) -> Option<U256> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        U256::from_str_radix(hex, 16).ok()
+    } else {
+        U256::from_str_radix(s, 10).ok()
+    }
+}
+
+fn read_uint(msg: &serde_json::Value, field: &str) -> Option<U256> {
+    parse_uint(&read_uint_string(msg, field)?)
+}
+
+fn require_address(
+    msg: &serde_json::Value,
+    field: &str,
+    expected: Address,
+    label: &str,
+) -> Result<(), CliError> {
+    let s = msg
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "Gasless approval message missing `{field}` ({label}) — refusing to sign"
+            ),
+            status: None,
+            details: None,
+            suggestion: None,
+        })?;
+    let parsed = Address::from_str(s).map_err(|_| CliError::Api {
+        code: ErrorCode::InvalidSignature,
+        message: format!(
+            "Gasless approval `{field}` '{s}' isn't a valid address — refusing to sign"
+        ),
+        status: None,
+        details: None,
+        suggestion: None,
+    })?;
+    if parsed != expected {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "Gasless approval {label}={parsed} doesn't match the signing wallet ({expected}) — refusing to sign"
+            ),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "A permit owned by a different address would not authorize this wallet's swap. Contact 0x support.".into(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn require_future_deadline(
+    payload_kind: &str,
+    field: &str,
+    deadline: U256,
+) -> Result<(), CliError> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let now_u256 = U256::from(now);
+    if deadline <= now_u256 {
+        return Err(CliError::Api {
+            code: ErrorCode::InvalidSignature,
+            message: format!(
+                "Gasless {payload_kind} {field}={deadline} is in the past (now={now}) — refusing to sign"
+            ),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "An expired permit can't be relayed. Re-fetch the quote; if it persists, contact 0x support.".into(),
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn missing_message_err(payload_kind: &str) -> CliError {
+    CliError::Api {
+        code: ErrorCode::InvalidSignature,
+        message: format!(
+            "Gasless {payload_kind} EIP-712 is missing the `message` block — refusing to sign"
+        ),
+        status: None,
+        details: None,
+        suggestion: Some("Re-fetch the quote; if it persists, contact 0x support.".into()),
+    }
+}
+
+fn missing_field_err(payload_kind: &str, field: &str) -> CliError {
+    CliError::Api {
+        code: ErrorCode::InvalidSignature,
+        message: format!("Gasless {payload_kind} message missing `{field}` — refusing to sign"),
+        status: None,
+        details: None,
+        suggestion: Some("Re-fetch the quote; if it persists, contact 0x support.".into()),
+    }
+}
+
+fn amount_too_small_err(payload_kind: &str, field: &str, got: U256, expected: U256) -> CliError {
+    CliError::Api {
+        code: ErrorCode::InvalidSignature,
+        message: format!(
+            "Gasless {payload_kind} {field}={got} is less than the quote's sellAmount {expected} — refusing to sign"
+        ),
+        status: None,
+        details: None,
+        suggestion: Some(
+            "A short permit would let the relayer pull less than you intended to sell. Contact 0x support.".into(),
+        ),
+    }
+}
+
 /// Poll gasless status until terminal state. ~5 min total, 5 s interval.
 async fn poll_gasless_status(
     client: &ApiClient,
@@ -548,7 +960,10 @@ async fn poll_gasless_status(
     spinner: Option<&indicatif::ProgressBar>,
 ) -> Result<crate::api::gasless::GaslessStatusResponse, CliError> {
     crate::api::poll::poll_until_terminal(
-        crate::api::poll::PollConfig::new(5, 300, ErrorCode::TransactionTimeout),
+        // 10-minute total budget — gasless relayers normally land within
+        // 30s but congested L2 windows or paused operator queues can take
+        // several minutes; 5 minutes was too tight in practice.
+        crate::api::poll::PollConfig::new(5, 600, ErrorCode::TransactionTimeout),
         |elapsed, s: &crate::api::gasless::GaslessStatusResponse| {
             if let Some(sp) = spinner {
                 sp.set_message(format!("Status: {} ({}s elapsed)", s.status, elapsed));
@@ -569,75 +984,340 @@ async fn poll_gasless_status(
 mod tests {
     use super::*;
 
-    fn permit_message(token: &str, amount: &str) -> serde_json::Value {
+    const SIGNER: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SELL_TOKEN: &str = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+
+    fn signer_addr() -> Address {
+        Address::from_str(SIGNER).unwrap()
+    }
+
+    fn far_future_deadline() -> String {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        (now + 3600).to_string()
+    }
+
+    // ── Trade-side: domain + Permit2 PermitTransferFrom binding ─────────
+
+    fn trade_eip712(
+        verifying_contract: &str,
+        chain_id: u64,
+        token: &str,
+        amount: &str,
+    ) -> serde_json::Value {
         serde_json::json!({
+            "domain": { "chainId": chain_id, "verifyingContract": verifying_contract },
             "message": { "permitted": { "token": token, "amount": amount } }
         })
     }
 
     #[test]
-    fn approval_validation_passes_when_token_and_amount_match() {
-        let eip = permit_message("0xAAAAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "1000000");
-        assert!(validate_approval_message(
-            &eip,
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "1000000",
-        )
-        .is_ok());
+    fn trade_domain_accepts_canonical_permit2_case_insensitively() {
+        let eip = trade_eip712(&PERMIT2_ADDRESS.to_lowercase(), 1, SELL_TOKEN, "1000000");
+        assert!(validate_trade_domain(&eip, "Permit2", 1).is_ok());
     }
 
     #[test]
-    fn approval_validation_rejects_wrong_token() {
-        let eip = permit_message("0xdeadbeef0000000000000000000000000000beef", "1000000");
-        let err = validate_approval_message(
-            &eip,
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    fn trade_domain_rejects_non_permit2_when_type_is_permit2() {
+        let eip = trade_eip712(
+            "0x1111111111111111111111111111111111111111",
+            1,
+            SELL_TOKEN,
             "1000000",
-        )
-        .unwrap_err();
+        );
+        let err = validate_trade_domain(&eip, "Permit2", 1).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+        assert!(format!("{err}").contains("Permit2"));
+    }
+
+    #[test]
+    fn trade_domain_rejects_wrong_chain_id() {
+        let eip = trade_eip712(PERMIT2_ADDRESS, 137, SELL_TOKEN, "1000000");
+        let err = validate_trade_domain(&eip, "Permit2", 1).unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidSignature);
     }
 
     #[test]
-    fn approval_validation_rejects_wrong_amount() {
-        let eip = permit_message("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "999");
-        let err = validate_approval_message(
-            &eip,
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    fn trade_permitted_matches_quote() {
+        let eip = trade_eip712(PERMIT2_ADDRESS, 1, SELL_TOKEN, "1000000");
+        assert!(validate_trade_permitted(&eip, SELL_TOKEN, "1000000").is_ok());
+    }
+
+    #[test]
+    fn trade_permitted_rejects_wrong_token() {
+        let eip = trade_eip712(
+            PERMIT2_ADDRESS,
+            1,
+            "0xdeadbeef0000000000000000000000000000beef",
             "1000000",
-        )
-        .unwrap_err();
+        );
+        let err = validate_trade_permitted(&eip, SELL_TOKEN, "1000000").unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidSignature);
     }
 
     #[test]
-    fn approval_validation_fails_closed_when_permitted_missing() {
-        // Empty message: must fail — used to pass with the old "if let (Some, Some)" guard.
-        let eip = serde_json::json!({ "message": {} });
-        let err = validate_approval_message(
-            &eip,
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "1000000",
-        )
-        .unwrap_err();
+    fn trade_permitted_rejects_wrong_amount() {
+        let eip = trade_eip712(PERMIT2_ADDRESS, 1, SELL_TOKEN, "999");
+        let err = validate_trade_permitted(&eip, SELL_TOKEN, "1000000").unwrap_err();
         assert_eq!(err.code(), ErrorCode::InvalidSignature);
     }
 
     #[test]
-    fn approval_validation_accepts_numeric_amount() {
+    fn trade_permitted_rejects_missing_permitted() {
         let eip = serde_json::json!({
-            "message": {
-                "permitted": {
-                    "token": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "amount": 1000000u64
-                }
-            }
+            "domain": { "chainId": 1, "verifyingContract": PERMIT2_ADDRESS },
+            "message": {}
         });
-        assert!(validate_approval_message(
-            &eip,
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        assert!(validate_trade_permitted(&eip, SELL_TOKEN, "1000000").is_err());
+    }
+
+    // ── Approval-side: domain bound to sell_token ───────────────────────
+
+    fn approval_eip712_with(message: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "domain": { "chainId": 1, "verifyingContract": SELL_TOKEN },
+            "message": message,
+        })
+    }
+
+    #[test]
+    fn approval_domain_rejects_when_verifying_contract_is_not_sell_token() {
+        let eip = serde_json::json!({
+            "domain": { "chainId": 1, "verifyingContract": "0x1111111111111111111111111111111111111111" },
+            "message": {}
+        });
+        let err = validate_approval_domain(&eip, SELL_TOKEN, 1).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+        assert!(format!("{err}").contains("sell_token"));
+    }
+
+    #[test]
+    fn approval_domain_accepts_sell_token_case_insensitively() {
+        // Uppercase the body but keep the `0x` prefix lowercase — that's
+        // the EIP-55 mixed-case checksum shape the 0x API actually emits.
+        // `is_address_shaped` rejects `0X` so testing pure to_uppercase()
+        // would assert the wrong invariant.
+        let mixed = format!("0x{}", SELL_TOKEN[2..].to_uppercase());
+        let eip = serde_json::json!({
+            "domain": { "chainId": 1, "verifyingContract": mixed },
+            "message": {}
+        });
+        assert!(validate_approval_domain(&eip, SELL_TOKEN, 1).is_ok());
+    }
+
+    // ── EIP-2612 permit ─────────────────────────────────────────────────
+
+    fn permit_eip712(owner: &str, value: &str, deadline: &str) -> serde_json::Value {
+        approval_eip712_with(serde_json::json!({
+            "owner": owner,
+            "spender": "0x1111111111111111111111111111111111111111",
+            "value": value,
+            "nonce": "0",
+            "deadline": deadline,
+        }))
+    }
+
+    #[test]
+    fn permit_happy_path() {
+        let eip = permit_eip712(SIGNER, "1000000", &far_future_deadline());
+        assert!(validate_approval("permit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1).is_ok());
+    }
+
+    #[test]
+    fn permit_rejects_owner_not_signer() {
+        let eip = permit_eip712(
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "1000000",
+            &far_future_deadline(),
+        );
+        let err =
+            validate_approval("permit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+    }
+
+    #[test]
+    fn permit_rejects_insufficient_value() {
+        let eip = permit_eip712(SIGNER, "999", &far_future_deadline());
+        let err =
+            validate_approval("permit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+        assert!(format!("{err}").contains("less than"));
+    }
+
+    #[test]
+    fn permit_accepts_value_greater_than_sell_amount() {
+        // The API can issue a larger permit than the sell amount (e.g. round
+        // up). Only "smaller than" is unsafe.
+        let eip = permit_eip712(SIGNER, "2000000", &far_future_deadline());
+        assert!(validate_approval("permit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1).is_ok());
+    }
+
+    #[test]
+    fn permit_rejects_expired_deadline() {
+        let eip = permit_eip712(SIGNER, "1000000", "1");
+        let err =
+            validate_approval("permit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+        assert!(format!("{err}").contains("past"));
+    }
+
+    #[test]
+    fn permit_accepts_hex_encoded_value() {
+        // Some EIP-712 producers emit uint256 fields as 0x-prefixed hex.
+        let eip = permit_eip712(SIGNER, "0xf4240", &far_future_deadline()); // 0xf4240 = 1_000_000
+        assert!(validate_approval("permit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1).is_ok());
+    }
+
+    // ── daiPermit ──────────────────────────────────────────────────────
+
+    fn dai_permit_eip712(holder: &str, allowed: bool, expiry: &str) -> serde_json::Value {
+        approval_eip712_with(serde_json::json!({
+            "holder": holder,
+            "spender": "0x1111111111111111111111111111111111111111",
+            "nonce": "0",
+            "expiry": expiry,
+            "allowed": allowed,
+        }))
+    }
+
+    #[test]
+    fn dai_permit_happy_path() {
+        let eip = dai_permit_eip712(SIGNER, true, &far_future_deadline());
+        assert!(
+            validate_approval("daiPermit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1).is_ok()
+        );
+    }
+
+    #[test]
+    fn dai_permit_rejects_allowed_false() {
+        let eip = dai_permit_eip712(SIGNER, false, &far_future_deadline());
+        let err = validate_approval("daiPermit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1)
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+        assert!(format!("{err}").contains("revoke"));
+    }
+
+    #[test]
+    fn dai_permit_rejects_zero_expiry() {
+        let eip = dai_permit_eip712(SIGNER, true, "0");
+        let err = validate_approval("daiPermit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1)
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+        assert!(format!("{err}").contains("expiry=0"));
+    }
+
+    // ── executeMetaTransaction::approve ────────────────────────────────
+
+    fn metatx_function_signature(spender: &str, amount: U256) -> String {
+        // selector(4) + spender(32) + amount(32) = 68 bytes
+        let mut bytes = Vec::with_capacity(68);
+        bytes.extend_from_slice(&ERC20_APPROVE_SELECTOR);
+        // spender padded to 32 bytes
+        let spender_bytes = hex::decode(spender.trim_start_matches("0x")).unwrap();
+        bytes.extend_from_slice(&[0u8; 12]);
+        bytes.extend_from_slice(&spender_bytes);
+        // amount as 32-byte BE
+        let amount_bytes: [u8; 32] = amount.to_be_bytes();
+        bytes.extend_from_slice(&amount_bytes);
+        format!("0x{}", hex::encode(bytes))
+    }
+
+    fn metatx_eip712(from: &str, function_signature: &str) -> serde_json::Value {
+        approval_eip712_with(serde_json::json!({
+            "nonce": "0",
+            "from": from,
+            "functionSignature": function_signature,
+        }))
+    }
+
+    #[test]
+    fn metatx_approve_happy_path() {
+        let sig = metatx_function_signature(
+            "0x1111111111111111111111111111111111111111",
+            U256::from(1_000_000u64),
+        );
+        let eip = metatx_eip712(SIGNER, &sig);
+        assert!(validate_approval(
+            "executeMetaTransaction::approve",
+            &eip,
+            SELL_TOKEN,
+            "1000000",
+            signer_addr(),
+            1,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn metatx_approve_rejects_wrong_selector() {
+        // transfer(address,uint256) selector = 0xa9059cbb — same shape, different call.
+        let mut bytes = Vec::with_capacity(68);
+        bytes.extend_from_slice(&[0xa9, 0x05, 0x9c, 0xbb]);
+        bytes.extend_from_slice(&[0u8; 32]);
+        bytes.extend_from_slice(&[0u8; 32]);
+        let sig = format!("0x{}", hex::encode(bytes));
+        let eip = metatx_eip712(SIGNER, &sig);
+        let err = validate_approval(
+            "executeMetaTransaction::approve",
+            &eip,
+            SELL_TOKEN,
+            "1000000",
+            signer_addr(),
+            1,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("selector"));
+    }
+
+    #[test]
+    fn metatx_approve_rejects_insufficient_amount() {
+        let sig = metatx_function_signature(
+            "0x1111111111111111111111111111111111111111",
+            U256::from(999u64),
+        );
+        let eip = metatx_eip712(SIGNER, &sig);
+        let err = validate_approval(
+            "executeMetaTransaction::approve",
+            &eip,
+            SELL_TOKEN,
+            "1000000",
+            signer_addr(),
+            1,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("less than"));
+    }
+
+    #[test]
+    fn metatx_approve_rejects_wrong_length() {
+        // Truncated functionSignature — selector + only 16 bytes of args.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&ERC20_APPROVE_SELECTOR);
+        bytes.extend_from_slice(&[0u8; 16]);
+        let sig = format!("0x{}", hex::encode(bytes));
+        let eip = metatx_eip712(SIGNER, &sig);
+        let err = validate_approval(
+            "executeMetaTransaction::approve",
+            &eip,
+            SELL_TOKEN,
+            "1000000",
+            signer_addr(),
+            1,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("bytes"));
+    }
+
+    // ── Unknown signable_type ───────────────────────────────────────────
+
+    #[test]
+    fn unknown_signable_type_rejected_fail_closed() {
+        let eip = approval_eip712_with(serde_json::json!({}));
+        let err = validate_approval("hyperPermit", &eip, SELL_TOKEN, "1000000", signer_addr(), 1)
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidSignature);
+        assert!(format!("{err}").contains("Unknown"));
     }
 }

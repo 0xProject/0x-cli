@@ -40,12 +40,14 @@ pub struct ApiAccountMeta {
 }
 
 impl ApiClient {
-    /// Get Solana swap instructions
+    /// Get Solana swap instructions. The 0x Solana API accepts the same
+    /// shared headers (`0x-api-key`, `0x-version`, `content-type`) as the
+    /// EVM endpoints; no path-specific header handling is needed.
     pub async fn get_solana_swap(
         &self,
         request: &SolanaSwapRequest,
     ) -> Result<SolanaSwapResponse, CliError> {
-        self.post_solana("/solana/swap-instructions", request).await
+        self.post("/solana/swap-instructions", request).await
     }
 }
 
@@ -64,7 +66,10 @@ mod tests {
         };
 
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["token_in"], "So11111111111111111111111111111111111111112");
+        assert_eq!(
+            json["token_in"],
+            "So11111111111111111111111111111111111111112"
+        );
         assert_eq!(json["amount_in"], 1_000_000);
         assert_eq!(json["slippage_bps"], 100);
     }

@@ -312,8 +312,14 @@ pub enum ConfigAction {
     /// Interactive configuration wizard
     #[command(long_about = "Interactively set up your 0x CLI configuration.\n\n\
         Guides you through setting your API key, default chain, wallet,\n\
-        and RPC endpoints.")]
-    Init,
+        and RPC endpoints. Pass --browser to open dashboard.0x.org in your\n\
+        default browser so you can grab an API key without leaving the\n\
+        terminal.")]
+    Init {
+        /// Open https://dashboard.0x.org in the default browser to grab an API key
+        #[arg(long)]
+        browser: bool,
+    },
 
     /// Set a configuration value
     #[command(

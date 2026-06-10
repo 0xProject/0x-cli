@@ -28,14 +28,54 @@ fn known_solana_meta(mint: &str) -> Option<TokenMeta> {
 }
 
 /// Execute a Solana swap. Reached from `commands::swap::run` when the chain
-/// resolves to Solana.
+/// resolves to Solana — the caller passes the already-resolved `ChainInfo`
+/// so we don't lose the original CLI input (e.g. for error messages or
+/// future per-chain Solana variants).
 pub async fn run(
     args: &SwapArgs,
     output: &OutputHandler,
     config: &config::types::AppConfig,
     global: &crate::GlobalOpts,
+    chain_info: &chain::ChainInfo,
 ) -> Result<i32, CliError> {
-    let chain_info = chain::resolve_chain("solana")?;
+    debug_assert!(
+        chain_info.is_solana(),
+        "solana_swap::run reached for non-Solana chain"
+    );
+
+    // Reject unsupported flags FIRST — before loading the wallet or API key.
+    // The flag misuse is a CLI-shape error and should surface before any
+    // config-missing errors so the user learns about the misuse even on a
+    // freshly-installed CLI with no wallet yet.
+    //
+    // `--recipient` carries real intent (the user expects tokens to land at
+    // a specific address). The 0x Solana API always credits the signer, so
+    // silently ignoring would route funds to the wrong place.
+    if args.recipient.is_some() {
+        return Err(CliError::Api {
+            code: ErrorCode::InputInvalid,
+            message: "--recipient is not supported on Solana swaps (tokens always go to the signer)".into(),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "Drop the --recipient flag, or transfer the tokens in a second step after the swap settles.".into(),
+            ),
+        });
+    }
+    // `--gasless` is EVM-only (Permit2 + meta-transactions don't exist on
+    // SVM). Silently falling through to the regular Solana swap would hide
+    // the fact that the user's expected "no gas needed" UX is gone.
+    if args.gasless {
+        return Err(CliError::Api {
+            code: ErrorCode::InputInvalid,
+            message: "--gasless is not supported on Solana swaps (gasless is EVM-only)".into(),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "Drop the --gasless flag. Solana swaps require SOL for fees but they're sub-cent and unavoidable.".into(),
+            ),
+        });
+    }
 
     let api_key = global
         .api_key
@@ -52,9 +92,9 @@ pub async fn run(
     let sell = SideMeta::from_meta(args.sell.clone(), known_solana_meta(&args.sell));
     let buy = SideMeta::from_meta(args.buy.clone(), known_solana_meta(&args.buy));
 
-    // EVM-only flags on a Solana swap are silently ignored except for an
-    // explicit non-default approval, which we surface so the user knows.
-    // Pushed as a structured warning so JSON consumers see it; the OutputHandler
+    // `--approval` is informational on Solana — the SVM has no per-token
+    // allowance model — so we just warn rather than refuse. Surfaced as a
+    // structured warning so JSON consumers see it; the OutputHandler
     // renders these to stderr in Human mode too.
     let mut ignored_flag_warnings: Vec<Warning> = Vec::new();
     if !matches!(args.approval, ApprovalStrategy::Exact) {
@@ -63,19 +103,16 @@ pub async fn run(
             message: "--approval is EVM-only and was ignored for this Solana swap".into(),
         });
     }
-    if args.recipient.is_some() {
-        ignored_flag_warnings.push(Warning {
-            code: "FLAG_IGNORED".into(),
-            message: "--recipient is EVM-only and was ignored for this Solana swap".into(),
-        });
-    }
 
     let client = ApiClient::new(api_key, global.timeout)?;
 
     chain::validate_base_unit_amount(&args.amount)?;
     let amount_in: u64 = args.amount.parse().map_err(|_| CliError::Api {
         code: ErrorCode::InputInvalid,
-        message: format!("Amount '{}' overflows u64 (max ~1.8e19 base units)", args.amount),
+        message: format!(
+            "Amount '{}' overflows u64 (max ~1.8e19 base units)",
+            args.amount
+        ),
         status: None,
         details: None,
         suggestion: None,
@@ -106,14 +143,15 @@ pub async fn run(
         &buy,
         &args.amount,
         swap_resp.amount_out,
-        amount_in,
         None,
         false,
         true,
     );
+    // Dry-run bypasses the confirmation gate (read-only path, nothing to sign).
+    let auto_confirm = global.yes || global.dry_run;
     match confirm_or_preview(
         output,
-        global.yes,
+        auto_confirm,
         &summary,
         "swap",
         &preview,
@@ -124,13 +162,12 @@ pub async fn run(
         ConfirmFlow::PreviewEmitted => return Ok(25),
     }
 
-    let rpc_url =
-        config::resolve_rpc_url_with_override(global.rpc_url.as_deref(), config, chain_info)?;
+    let rpc = config::resolve_rpc(global.rpc_url.as_deref(), config, chain_info)?;
 
     let spinner = output.spinner_guard("Executing Solana swap...");
 
     let result = crate::chain::solana::execute_solana_swap(
-        &rpc_url,
+        &rpc.url,
         &keypair,
         &swap_resp,
         global.dry_run,
@@ -138,7 +175,8 @@ pub async fn run(
             spinner.set_message(status.to_string());
         },
     )
-    .await?;
+    .await
+    .map_err(|e| rpc.enrich_rpc_error(e, chain_info))?;
 
     drop(spinner);
 
@@ -150,14 +188,17 @@ pub async fn run(
         crate::chain::solana::SolanaSwapResult::DryRun => (None, None, true, 30),
     };
 
+    let tx = match (tx_hash, explorer_url) {
+        (Some(h), Some(e)) => Some((h, e)),
+        _ => None,
+    };
     let out = solana_swap_output(
         chain_info,
         &sell,
         &buy,
         &args.amount,
         swap_resp.amount_out,
-        amount_in,
-        tx_hash.map(|h| (h, explorer_url.unwrap_or_default())),
+        tx,
         dry_run,
         false,
     );
@@ -175,17 +216,14 @@ fn solana_swap_output(
     buy: &SideMeta,
     sell_amount_raw: &str,
     buy_amount_raw: u64,
-    sell_amount_in: u64,
     tx: Option<(String, String)>,
     dry_run: bool,
     needs_confirmation: bool,
 ) -> SwapOutput {
     let buy_amount_raw_s = buy_amount_raw.to_string();
-    let rate = if sell_amount_in > 0 {
-        format!("{:.10}", buy_amount_raw as f64 / sell_amount_in as f64)
-    } else {
-        "N/A".to_string()
-    };
+    // Same BigDecimal-backed compute_rate the EVM and cross-chain commands
+    // use — keeps "rate" formatting consistent across flows.
+    let rate = crate::api::types::compute_rate(sell_amount_raw, &buy_amount_raw_s);
 
     let (tx_hash, explorer_url) = match tx {
         Some((hash, explorer)) => (Some(hash), Some(explorer)),
@@ -198,6 +236,10 @@ fn solana_swap_output(
         buy_token: buy.token_info(),
         sell_amount: sell.amount(sell_amount_raw),
         buy_amount: buy.amount(&buy_amount_raw_s),
+        // TODO: Solana settled amount would require a follow-up
+        // get_transaction RPC call to read pre/post token balances.
+        // Skipped for now; the quoted amount above is what we have.
+        buy_amount_settled: None,
         min_buy_amount: buy.amount(&buy_amount_raw_s),
         rate,
         gas_used: None,

@@ -9,15 +9,17 @@ use solana_sdk::signer::Signer;
 /// The keyring stores key material (base58 or JSON array). File paths are stored
 /// in the config file because the path itself isn't secret. Keyring failures
 /// fall through silently to the config file.
-pub fn load_solana_keypair(config: &AppConfig, cli_wallet: Option<&str>) -> Result<Keypair, CliError> {
+pub fn load_solana_keypair(
+    config: &AppConfig,
+    cli_wallet: Option<&str>,
+) -> Result<Keypair, CliError> {
     let source = if let Some(wallet_arg) = cli_wallet {
         wallet_arg.to_string()
     } else if let Ok(env_val) = std::env::var("ZEROX_SOLANA_KEYPAIR") {
         env_val
-    } else if let Some(keyring_val) = crate::wallet::keyring_store::get(
-        crate::wallet::keyring_store::keys::WALLET_SOLANA,
-    )
-    .unwrap_or(None)
+    } else if let Some(keyring_val) =
+        crate::wallet::keyring_store::get(crate::wallet::keyring_store::keys::WALLET_SOLANA)
+            .unwrap_or(None)
     {
         keyring_val
     } else if let Some(ref config_val) = config.wallet.solana {

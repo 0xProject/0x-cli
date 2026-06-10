@@ -206,19 +206,34 @@ mod tests {
         assert_eq!(format_amount("100000000", 6), "100.000000");
         assert_eq!(format_amount("123", 6), "0.000123");
         assert_eq!(format_amount("0", 6), "0.000000");
-        assert_eq!(format_amount("1000000000000000000", 18), "1.000000000000000000");
-        assert_eq!(format_amount("500000000000000000", 18), "0.500000000000000000");
+        assert_eq!(
+            format_amount("1000000000000000000", 18),
+            "1.000000000000000000"
+        );
+        assert_eq!(
+            format_amount("500000000000000000", 18),
+            "0.500000000000000000"
+        );
         assert_eq!(format_amount("42", 0), "42");
     }
 
     #[test]
     fn test_format_amount_rejects_malformed() {
         assert_eq!(format_amount("", 6), " (raw, not a base-unit integer)");
-        assert_eq!(format_amount("abc", 6), "abc (raw, not a base-unit integer)");
+        assert_eq!(
+            format_amount("abc", 6),
+            "abc (raw, not a base-unit integer)"
+        );
         assert_eq!(format_amount("-1", 6), "-1 (raw, not a base-unit integer)");
-        assert_eq!(format_amount("1.5", 6), "1.5 (raw, not a base-unit integer)");
+        assert_eq!(
+            format_amount("1.5", 6),
+            "1.5 (raw, not a base-unit integer)"
+        );
         // Zero decimals with malformed input is still flagged.
-        assert_eq!(format_amount("abc", 0), "abc (raw, not a base-unit integer)");
+        assert_eq!(
+            format_amount("abc", 0),
+            "abc (raw, not a base-unit integer)"
+        );
     }
 
     #[test]

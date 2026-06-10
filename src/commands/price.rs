@@ -33,16 +33,20 @@ impl HumanDisplay for PriceResult {
     fn display_human(&self, writer: &mut dyn Write, color: bool) -> io::Result<()> {
         let mut rows = vec![
             ("Sell".to_string(), self.sell_amount.display()),
-            ("Buy".to_string(), format!(
-                "{}{}",
-                self.buy_amount.display(),
-                self.buy_amount.usd_value.as_ref().map(|v| format!(" (~${v})")).unwrap_or_default()
-            )),
-            ("Rate".to_string(), self.rate.clone()),
             (
-                "Min Buy".to_string(),
-                self.min_buy_amount.display(),
+                "Buy".to_string(),
+                format!(
+                    "{}{}",
+                    self.buy_amount.display(),
+                    self.buy_amount
+                        .usd_value
+                        .as_ref()
+                        .map(|v| format!(" (~${v})"))
+                        .unwrap_or_default()
+                ),
             ),
+            ("Rate".to_string(), self.rate.clone()),
+            ("Min Buy".to_string(), self.min_buy_amount.display()),
         ];
 
         if !self.route.is_empty() {
@@ -115,7 +119,10 @@ pub async fn run(
         // Solana price: call swap-instructions and use amountOut
         let amount_in: u64 = sell_amount.parse().map_err(|_| CliError::Api {
             code: ErrorCode::InputInvalid,
-            message: format!("Invalid Solana amount '{}'. Must be a positive integer (lamports/base units).", sell_amount),
+            message: format!(
+                "Invalid Solana amount '{}'. Must be a positive integer (lamports/base units).",
+                sell_amount
+            ),
             status: None,
             details: None,
             suggestion: Some("For SOL, 1 SOL = 1000000000 lamports".into()),
@@ -142,18 +149,15 @@ pub async fn run(
 
         let sell = SideMeta::address_only(args.sell.clone());
         let buy = SideMeta::address_only(args.buy.clone());
+        let buy_raw = resp.amount_out.to_string();
         let result = PriceResult {
             chain: chain_info.display_name.to_string(),
             sell_token: sell.token_info(),
             buy_token: buy.token_info(),
             sell_amount: sell.amount(sell_amount),
-            buy_amount: buy.amount(&resp.amount_out.to_string()),
-            min_buy_amount: buy.amount(&resp.amount_out.to_string()),
-            rate: if amount_in > 0 {
-                format!("{:.10}", resp.amount_out as f64 / amount_in as f64)
-            } else {
-                "N/A".into()
-            },
+            buy_amount: buy.amount(&buy_raw),
+            min_buy_amount: buy.amount(&buy_raw),
+            rate: compute_rate(sell_amount, &buy_raw),
             gas_estimate: None,
             route: Vec::new(),
             liquidity_available: true,
@@ -191,7 +195,7 @@ pub async fn run(
         let (sell_meta, buy_meta) = resolve_pair_evm(
             &mut cache,
             rpc_url.as_deref(),
-            chain_info.numeric_id().unwrap_or(0),
+            chain_info.numeric_id().expect("EVM chain has a numeric id"),
             &resp.sell_token,
             &resp.buy_token,
             &mut warnings,
@@ -291,24 +295,34 @@ fn build_price_result(
     sell: &SideMeta,
     buy: &SideMeta,
 ) -> PriceResult {
-    let route = resp
-        .route
-        .as_ref()
-        .map(|r| r.sources())
-        .unwrap_or_default();
+    let route = resp.route.as_ref().map(|r| r.sources()).unwrap_or_default();
 
     let gas_estimate = match (&resp.gas, &resp.gas_price) {
         (Some(gas), Some(gas_price)) => {
-            let gas_num: u128 = gas.parse().unwrap_or(0);
-            let price_num: u128 = gas_price.parse().unwrap_or(0);
-            let total_wei = gas_num.saturating_mul(price_num);
-            Some(format!(
-                "{} {} (gas: {}, price: {})",
-                format_amount(&total_wei.to_string(), 18),
-                chain_info.native_token,
-                gas,
-                gas_price
-            ))
+            // If either side fails to parse, skip the estimate entirely
+            // rather than emit a misleading "0 ETH" line. The raw values are
+            // still available on the response payload for callers that want
+            // them.
+            match (gas.parse::<u128>(), gas_price.parse::<u128>()) {
+                (Ok(gas_num), Ok(price_num)) => {
+                    let total_wei = gas_num.saturating_mul(price_num);
+                    Some(format!(
+                        "{} {} (gas: {}, price: {})",
+                        format_amount(&total_wei.to_string(), 18),
+                        chain_info.native_token,
+                        gas,
+                        gas_price
+                    ))
+                }
+                _ => {
+                    tracing::warn!(
+                        gas = %gas,
+                        gas_price = %gas_price,
+                        "0x API returned unparseable gas / gas_price; omitting estimate"
+                    );
+                    None
+                }
+            }
         }
         _ => None,
     };
@@ -326,4 +340,3 @@ fn build_price_result(
         liquidity_available: resp.liquidity_available.unwrap_or(true),
     }
 }
-

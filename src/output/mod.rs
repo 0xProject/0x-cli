@@ -42,10 +42,17 @@ impl OutputHandler {
     /// most commands should use [`Self::emit_success`] instead, which
     /// converts BrokenPipe to a silent success and bubbles other write
     /// failures to stderr.
+    ///
+    /// `exit_code` is the value the process will actually exit with. The
+    /// `JsonEnvelope` format echoes it into the envelope's `exit_code` field
+    /// so agents reading the JSON see the same value the shell sees. Human
+    /// and Json formats ignore the parameter (they don't carry an explicit
+    /// exit-code field).
     pub fn success<T: Serialize + HumanDisplay>(
         &self,
         command: &str,
         data: &T,
+        exit_code: i32,
         metadata: Metadata,
         warnings: Vec<Warning>,
     ) -> io::Result<()> {
@@ -67,16 +74,14 @@ impl OutputHandler {
                 }
             }
             OutputFormat::Json => {
-                serde_json::to_writer_pretty(&mut out, data)
-                    .map_err(io::Error::other)?;
+                serde_json::to_writer_pretty(&mut out, data).map_err(io::Error::other)?;
                 writeln!(out)?;
             }
             OutputFormat::JsonEnvelope => {
                 let envelope =
-                    CliOutput::success(command, data, self.elapsed_ms(), metadata)
+                    CliOutput::success(command, data, self.elapsed_ms(), exit_code, metadata)
                         .with_warnings(warnings);
-                serde_json::to_writer_pretty(&mut out, &envelope)
-                    .map_err(io::Error::other)?;
+                serde_json::to_writer_pretty(&mut out, &envelope).map_err(io::Error::other)?;
                 writeln!(out)?;
             }
         }
@@ -94,10 +99,9 @@ impl OutputHandler {
     /// - On any other write failure: prints a one-line diagnostic to stderr
     ///   and returns `1`. We can't do anything more useful at that point.
     ///
-    /// Replaces the old `output.success(...).map_err(|e| CliError::config(
-    /// ErrorCode::Unknown, ...))` boilerplate, which leaked a meaningless
-    /// "unknown" error code through the envelope for IO failures that
-    /// were not config errors.
+    /// The same `exit_code` is also written into the envelope's `exit_code`
+    /// field (for `-o json-envelope`) so the JSON view doesn't lie about the
+    /// process exit.
     pub fn emit_success<T: Serialize + HumanDisplay>(
         &self,
         command: &str,
@@ -106,7 +110,7 @@ impl OutputHandler {
         warnings: Vec<Warning>,
         exit_code: i32,
     ) -> i32 {
-        match self.success(command, data, metadata, warnings) {
+        match self.success(command, data, exit_code, metadata, warnings) {
             Ok(()) => exit_code,
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => exit_code,
             Err(e) => {
@@ -132,8 +136,12 @@ impl OutputHandler {
                 let _ = writeln!(out);
             }
             OutputFormat::JsonEnvelope => {
-                let envelope =
-                    CliOutput::<serde_json::Value>::error(command, err, self.elapsed_ms(), metadata);
+                let envelope = CliOutput::<serde_json::Value>::error(
+                    command,
+                    err,
+                    self.elapsed_ms(),
+                    metadata,
+                );
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
                 let _ = serde_json::to_writer_pretty(&mut out, &envelope);
@@ -226,7 +234,6 @@ impl SpinnerGuard {
     pub fn progress_bar(&self) -> Option<&indicatif::ProgressBar> {
         self.inner.as_ref()
     }
-
 }
 
 impl Drop for SpinnerGuard {

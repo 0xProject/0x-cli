@@ -146,7 +146,11 @@ impl CrossChainQuote {
 }
 
 impl ApiClient {
-    /// Get cross-chain quotes
+    /// Get cross-chain quotes. `destination_address` is required by the API
+    /// for any Solana-side leg (the protocol can't derive a Solana pubkey
+    /// from an EVM signer), and the API also requires it for EVM-to-EVM in
+    /// some versions — so we always send it. Callers default it to the
+    /// signer's address on the destination chain.
     #[allow(clippy::too_many_arguments)]
     pub async fn get_cross_chain_quotes(
         &self,
@@ -156,6 +160,7 @@ impl ApiClient {
         buy_token: &str,
         sell_amount: &str,
         origin_address: &str,
+        destination_address: &str,
         slippage_bps: Option<u32>,
         sort_by: Option<&str>,
         max_quotes: Option<u8>,
@@ -171,6 +176,7 @@ impl ApiClient {
             ("buyToken", buy_token),
             ("sellAmount", sell_amount),
             ("originAddress", origin_address),
+            ("destinationAddress", destination_address),
             ("slippageBps", &slippage_str),
             ("sortQuotesBy", sort),
             ("maxNumQuotes", &max_quotes_str),

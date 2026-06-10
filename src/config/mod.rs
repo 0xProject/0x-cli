@@ -6,49 +6,109 @@ use std::fs;
 use std::path::PathBuf;
 use types::AppConfig;
 
-/// Resolve the RPC URL for a chain from the config file (by name or numeric
-/// id). Errors when no entry is set — we deliberately do NOT fall back to a
-/// public RPC, because the public endpoints throttle aggressively and return
-/// stale/cached state, which makes simulation and chain-id verification lie.
-/// The `--rpc-url` flag and `ZEROX_RPC_URL` env var are handled at the clap
-/// layer and reach this resolver via [`resolve_rpc_url_with_override`].
-pub fn resolve_rpc_url(config: &AppConfig, chain_info: &ChainInfo) -> Result<String, CliError> {
-    if let Some(url) = config.rpc.get(chain_info.name) {
-        return Ok(url.clone());
-    }
+/// Where the chosen RPC URL came from. Surfaced to write paths so they can
+/// emit a warning when running against a public fallback endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcSource {
+    /// From `--rpc-url` or `ZEROX_RPC_URL`.
+    Override,
+    /// From `rpc.<chain>` in the config file.
+    Config,
+    /// Built-in public RPC fallback for the chain. Public endpoints throttle
+    /// and may return stale state; write paths warn.
+    BuiltinDefault,
+}
 
+/// A resolved RPC URL plus where it came from.
+#[derive(Debug, Clone)]
+pub struct ResolvedRpc {
+    pub url: String,
+    pub source: RpcSource,
+}
+
+impl ResolvedRpc {
+    /// When `self.source == BuiltinDefault` and `err` looks like an RPC-layer
+    /// failure (timeouts, rate-limits, network), append a "configure a
+    /// private RPC" hint to the error's suggestion field. Other sources or
+    /// non-RPC errors pass through unchanged.
+    ///
+    /// The hint only fires when it's actionable: the user is on a public
+    /// fallback AND the failure is plausibly caused by that endpoint's
+    /// limits, rather than e.g. an on-chain revert or bad input.
+    pub fn enrich_rpc_error(
+        &self,
+        err: crate::error::CliError,
+        chain_info: &ChainInfo,
+    ) -> crate::error::CliError {
+        if self.source != RpcSource::BuiltinDefault
+            || !crate::error::is_rpc_layer_failure(err.code())
+        {
+            return err;
+        }
+        err.append_suggestion(&format!(
+            "This call used the built-in public RPC for {}. If you're hitting rate limits or timeouts, configure a private one: 0x config set rpc.{} <url>",
+            chain_info.display_name, chain_info.name
+        ))
+    }
+}
+
+/// Resolve an RPC URL, preferring `override_url` (CLI flag / env var), then
+/// the config file's `rpc.<name>` or `rpc.<numeric_id>` entry, then the
+/// chain's built-in public default. Errors only when none of the above
+/// produces a URL — typically for newer chains we don't ship a default for.
+pub fn resolve_rpc(
+    override_url: Option<&str>,
+    config: &AppConfig,
+    chain_info: &ChainInfo,
+) -> Result<ResolvedRpc, CliError> {
+    if let Some(url) = override_url {
+        return Ok(ResolvedRpc {
+            url: url.to_string(),
+            source: RpcSource::Override,
+        });
+    }
+    if let Some(url) = config.rpc.get(chain_info.name) {
+        return Ok(ResolvedRpc {
+            url: url.clone(),
+            source: RpcSource::Config,
+        });
+    }
     if let Some(id) = chain_info.numeric_id() {
         if let Some(url) = config.rpc.get(&id.to_string()) {
-            return Ok(url.clone());
+            return Ok(ResolvedRpc {
+                url: url.clone(),
+                source: RpcSource::Config,
+            });
         }
     }
-
+    if let Some(url) = chain_info.default_rpc_url {
+        return Ok(ResolvedRpc {
+            url: url.to_string(),
+            source: RpcSource::BuiltinDefault,
+        });
+    }
     Err(CliError::Config {
         code: ErrorCode::ConfigNotFound,
         message: format!(
-            "No RPC URL configured for chain '{}'. Set one with: 0x config set rpc.{} <url>, or pass --rpc-url <url>",
+            "No RPC URL configured for chain '{}' and no built-in default available. Set one with: 0x config set rpc.{} <url>, or pass --rpc-url <url>",
             chain_info.display_name, chain_info.name
         ),
     })
 }
 
-/// Resolve the RPC URL, preferring the CLI override (`--rpc-url`) when set.
-/// Falls back to [`resolve_rpc_url`] (config → built-in default). The
-/// `ZEROX_RPC_URL` env var is consumed by clap at the flag layer, so it
-/// arrives here as the `override_url`.
+/// String-only convenience wrapper around [`resolve_rpc`] for callers that
+/// don't care about the source.
 pub fn resolve_rpc_url_with_override(
     override_url: Option<&str>,
     config: &AppConfig,
     chain_info: &ChainInfo,
 ) -> Result<String, CliError> {
-    if let Some(url) = override_url {
-        return Ok(url.to_string());
-    }
-    resolve_rpc_url(config, chain_info)
+    resolve_rpc(override_url, config, chain_info).map(|r| r.url)
 }
 
 /// Best-effort version of [`resolve_rpc_url_with_override`]: returns `None`
-/// when neither the override nor the config produces a URL.
+/// when no URL can be resolved at all (a chain without a built-in default
+/// and no user config).
 pub fn try_resolve_rpc_url_with_override(
     override_url: Option<&str>,
     config: &AppConfig,
@@ -200,11 +260,23 @@ pub fn set_config_value(
             Ok(SecretStorage::Config)
         }
         "defaults.slippage_bps" => {
-            config.defaults.slippage_bps =
-                value.parse().map_err(|_| CliError::Config {
+            // Mirror the clap range on `0x swap --slippage` (0..=10000) so we
+            // can't quietly persist a value that the swap CLI would later
+            // refuse — the user would see "100 bps" stored and "20000
+            // out-of-range" later.
+            let parsed: u32 = value.parse().map_err(|_| CliError::Config {
+                code: ErrorCode::InputInvalid,
+                message: format!("Invalid slippage value: {value}"),
+            })?;
+            if parsed > 10000 {
+                return Err(CliError::Config {
                     code: ErrorCode::InputInvalid,
-                    message: format!("Invalid slippage value: {value}"),
-                })?;
+                    message: format!(
+                        "Slippage must be 0..=10000 bps (100 = 1%, 10000 = 100%); got {parsed}"
+                    ),
+                });
+            }
+            config.defaults.slippage_bps = parsed;
             Ok(SecretStorage::Config)
         }
         "defaults.approval_type" => {
@@ -403,10 +475,7 @@ mod tests {
         assert_eq!(config.defaults.slippage_bps, 50);
 
         set_config_value(&mut config, "rpc.base", "https://base.example.com", false).unwrap();
-        assert_eq!(
-            config.rpc.get("base").unwrap(),
-            "https://base.example.com"
-        );
+        assert_eq!(config.rpc.get("base").unwrap(), "https://base.example.com");
 
         // Get values
         assert_eq!(get_config_value(&config, "api_key").unwrap(), "test-key");
@@ -422,7 +491,9 @@ mod tests {
         let mut config = AppConfig::default();
         assert!(set_config_value(&mut config, "defaults.approval_type", "bad", false).is_err());
         assert!(set_config_value(&mut config, "defaults.approval_type", "exact", false).is_ok());
-        assert!(set_config_value(&mut config, "defaults.approval_type", "unlimited", false).is_ok());
+        assert!(
+            set_config_value(&mut config, "defaults.approval_type", "unlimited", false).is_ok()
+        );
     }
 
     #[test]
@@ -443,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_rpc_url_with_override_precedence() {
+    fn test_resolve_rpc_precedence() {
         use crate::chain::{resolve_chain, ChainId, ChainInfo, ChainType};
 
         let base = resolve_chain("base").unwrap();
@@ -453,26 +524,23 @@ mod tests {
         config
             .rpc
             .insert("base".to_string(), "https://configured.example".to_string());
-        let resolved = resolve_rpc_url_with_override(
-            Some("https://override.example"),
-            &config,
-            base,
-        )
-        .unwrap();
-        assert_eq!(resolved, "https://override.example");
+        let resolved = resolve_rpc(Some("https://override.example"), &config, base).unwrap();
+        assert_eq!(resolved.url, "https://override.example");
+        assert_eq!(resolved.source, RpcSource::Override);
 
         // 2. No override → fall back to config.
-        let resolved = resolve_rpc_url_with_override(None, &config, base).unwrap();
-        assert_eq!(resolved, "https://configured.example");
+        let resolved = resolve_rpc(None, &config, base).unwrap();
+        assert_eq!(resolved.url, "https://configured.example");
+        assert_eq!(resolved.source, RpcSource::Config);
 
-        // 3. No override and no config → Err (no public-RPC fallback).
+        // 3. No override and no config → fall back to the chain's built-in
+        //    public default. Used to Err before defaults were introduced.
         let empty = AppConfig::default();
-        assert!(resolve_rpc_url_with_override(None, &empty, base).is_err());
+        let resolved = resolve_rpc(None, &empty, base).unwrap();
+        assert_eq!(resolved.url, "https://mainnet.base.org");
+        assert_eq!(resolved.source, RpcSource::BuiltinDefault);
 
-        // 4. Same case but try_ variant returns None.
-        assert!(try_resolve_rpc_url_with_override(None, &empty, base).is_none());
-
-        // 5. Unknown chain with no config → Err.
+        // 4. Unknown chain (no built-in default) → Err.
         let unknown = ChainInfo {
             id: ChainId::Numeric(999_999),
             name: "made-up-chain",
@@ -480,9 +548,19 @@ mod tests {
             native_token: "MUC",
             explorer_url: "",
             chain_type: ChainType::Evm,
+            default_rpc_url: None,
         };
-        assert!(resolve_rpc_url_with_override(None, &empty, &unknown).is_err());
+        assert!(resolve_rpc(None, &empty, &unknown).is_err());
         assert!(try_resolve_rpc_url_with_override(None, &empty, &unknown).is_none());
+
+        // 5. Config entry by numeric id (e.g. `rpc.8453`) is also honored.
+        let mut by_id = AppConfig::default();
+        by_id
+            .rpc
+            .insert("8453".to_string(), "https://by-numeric.example".to_string());
+        let resolved = resolve_rpc(None, &by_id, base).unwrap();
+        assert_eq!(resolved.url, "https://by-numeric.example");
+        assert_eq!(resolved.source, RpcSource::Config);
     }
 
     #[test]

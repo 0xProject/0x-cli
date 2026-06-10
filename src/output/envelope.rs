@@ -73,13 +73,23 @@ impl Metadata {
 }
 
 impl<T: Serialize> CliOutput<T> {
-    pub fn success(command: &str, data: T, duration_ms: u64, metadata: Metadata) -> Self {
+    /// Build a success envelope. `exit_code` is what the process will actually
+    /// return — used by callers like the swap flow to report 25 (needs
+    /// confirmation), 30 (dry-run), or 11 (final state non-success) so the
+    /// envelope's `exit_code` field doesn't lie to downstream agents.
+    pub fn success(
+        command: &str,
+        data: T,
+        duration_ms: u64,
+        exit_code: i32,
+        metadata: Metadata,
+    ) -> Self {
         Self {
             version: "1",
             command: command.to_string(),
             timestamp: Utc::now().to_rfc3339(),
             duration_ms,
-            exit_code: 0,
+            exit_code,
             status: "success",
             data: Some(data),
             error: None,

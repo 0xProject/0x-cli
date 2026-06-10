@@ -21,7 +21,16 @@ pub struct SwapOutput {
     pub sell_token: TokenInfo,
     pub buy_token: TokenInfo,
     pub sell_amount: TokenAmount,
+    /// Quoted buy amount returned by 0x at quote time. The actual amount
+    /// delivered on-chain is in `buy_amount_settled` when it could be
+    /// decoded; agents that care about real settlement should prefer it.
     pub buy_amount: TokenAmount,
+    /// Actual settled buy amount decoded from the receipt's ERC-20 Transfer
+    /// events. `None` for dry-run / needs-confirmation previews, for
+    /// native-asset buys, and for cross-chain (origin receipt doesn't see
+    /// the destination credit). Falls back to `buy_amount` when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buy_amount_settled: Option<TokenAmount>,
     pub min_buy_amount: TokenAmount,
     pub rate: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +58,11 @@ impl HumanDisplay for SwapOutput {
 
         if self.needs_confirmation {
             if color {
-                writeln!(writer, "\n  {}", "Quote Preview (needs confirmation)".bold().yellow())?;
+                writeln!(
+                    writer,
+                    "\n  {}",
+                    "Quote Preview (needs confirmation)".bold().yellow()
+                )?;
             } else {
                 writeln!(writer, "\n  Quote Preview (needs confirmation)")?;
             }
@@ -60,7 +73,11 @@ impl HumanDisplay for SwapOutput {
                 writeln!(writer, "\n  Dry Run Complete")?;
             }
         } else if color {
-            writeln!(writer, "\n  {}", "Swap Executed Successfully".bold().green())?;
+            writeln!(
+                writer,
+                "\n  {}",
+                "Swap Executed Successfully".bold().green()
+            )?;
         } else {
             writeln!(writer, "\n  Swap Executed Successfully")?;
         }
@@ -78,7 +95,13 @@ impl HumanDisplay for SwapOutput {
             .as_deref()
             .unwrap_or(&self.buy_token.address);
 
-        writeln!(writer, "  {:<12} {} {}", "Sell:", self.sell_amount.display(), sell_label)?;
+        writeln!(
+            writer,
+            "  {:<12} {} {}",
+            "Sell:",
+            self.sell_amount.display(),
+            sell_label
+        )?;
 
         let buy_usd = self
             .buy_amount
@@ -86,17 +109,37 @@ impl HumanDisplay for SwapOutput {
             .as_ref()
             .map(|v| format!(" (~${v})"))
             .unwrap_or_default();
+        let quoted_label = if self.buy_amount_settled.is_some() {
+            " (quoted)"
+        } else {
+            ""
+        };
         writeln!(
             writer,
-            "  {:<12} {} {}{}",
-            "Buy:", self.buy_amount.display(), buy_label, buy_usd
+            "  {:<12} {} {}{}{}",
+            "Buy:",
+            self.buy_amount.display(),
+            buy_label,
+            buy_usd,
+            quoted_label
         )?;
+        if let Some(ref settled) = self.buy_amount_settled {
+            writeln!(
+                writer,
+                "  {:<12} {} {} (settled)",
+                "Received:",
+                settled.display(),
+                buy_label
+            )?;
+        }
 
         writeln!(writer, "  {:<12} {}", "Rate:", self.rate)?;
         writeln!(
             writer,
             "  {:<12} {} {}",
-            "Min Buy:", self.min_buy_amount.display(), buy_label
+            "Min Buy:",
+            self.min_buy_amount.display(),
+            buy_label
         )?;
 
         if !self.route.is_empty() {
@@ -146,7 +189,7 @@ pub async fn run(
     }
 
     if chain_info.is_solana() {
-        return super::solana_swap::run(args, output, &config, global).await;
+        return super::solana_swap::run(args, output, &config, global, chain_info).await;
     }
 
     if args.gasless {
@@ -282,11 +325,16 @@ async fn run_evm_swap(
     }
 
     let (preview, mut preview_warnings) =
-        build_swap_output(chain_info, &quote, &route, SwapResult::Preview, &sell, &buy);
+        build_swap_output(chain_info, &quote, &route, None, &sell, &buy);
     preview_warnings.extend(metadata_warnings.iter().cloned());
+    // Dry-run is read-only — bypass the confirmation gate so JSON consumers
+    // can `--dry-run -o json-envelope` without also setting `--yes`. Without
+    // this, piped non-TTY runs trigger NeedsConfirmation and exit 25,
+    // shadowing the dry-run path entirely.
+    let auto_confirm = global.yes || global.dry_run;
     match confirm_or_preview(
         output,
-        global.yes,
+        auto_confirm,
         &summary,
         "swap",
         &preview,
@@ -297,8 +345,7 @@ async fn run_evm_swap(
         ConfirmFlow::PreviewEmitted => return Ok(25),
     }
 
-    let rpc_url =
-        config::resolve_rpc_url_with_override(global.rpc_url.as_deref(), config, chain_info)?;
+    let rpc = config::resolve_rpc(global.rpc_url.as_deref(), config, chain_info)?;
 
     let spender = quote
         .issues
@@ -317,7 +364,7 @@ async fn run_evm_swap(
     let spinner = output.spinner_guard("Executing swap...");
 
     let result = EvmExecutor::execute_swap(
-        &rpc_url,
+        &rpc.url,
         chain_id,
         signer,
         &args.sell,
@@ -329,28 +376,33 @@ async fn run_evm_swap(
         &tx.value,
         tx.gas.as_deref(),
         tx.gas_price.as_deref(),
+        Some(&args.buy),
         global.dry_run,
         &|status| {
             spinner.set_message(status.to_string());
         },
     )
-    .await?;
+    .await
+    .map_err(|e| rpc.enrich_rpc_error(e, chain_info))?;
 
     drop(spinner);
 
     let (swap_output, mut warnings) =
-        build_swap_output(chain_info, &quote, &route, result, &sell, &buy);
+        build_swap_output(chain_info, &quote, &route, Some(result), &sell, &buy);
     warnings.extend(metadata_warnings);
 
     let exit_code = if swap_output.dry_run { 30 } else { 0 };
     Ok(output.emit_success("swap", &swap_output, metadata, warnings, exit_code))
 }
 
+/// Assemble a `SwapOutput` from a quote. `result = None` means "preview only"
+/// (the user hasn't confirmed yet); `Some(SwapResult)` is the executor's
+/// outcome after `--yes` / interactive confirmation.
 fn build_swap_output(
     chain_info: &chain::ChainInfo,
     quote: &QuoteResponse,
     route: &[RouteSource],
-    result: SwapResult,
+    result: Option<SwapResult>,
     sell: &SideMeta,
     buy: &SideMeta,
 ) -> (SwapOutput, Vec<Warning>) {
@@ -370,20 +422,34 @@ fn build_swap_output(
 
     let rate = compute_rate(&quote.sell_amount, &quote.buy_amount);
 
-    let (gas_used, effective_gas_price, tx_hash, explorer_url, block_number, dry_run, needs_confirmation) =
-        match result {
-            SwapResult::Success(receipt) => (
-                Some(receipt.gas_used.to_string()),
-                Some(receipt.effective_gas_price.to_string()),
-                Some(receipt.tx_hash.clone()),
-                Some(chain_info.explorer_tx_url(&receipt.tx_hash)),
-                receipt.block_number,
-                false,
-                false,
-            ),
-            SwapResult::DryRun => (None, None, None, None, None, true, false),
-            SwapResult::Preview => (None, None, None, None, None, false, true),
-        };
+    // Five things vary by execution mode: tx hash + receipt fields, the
+    // dry_run flag, the needs_confirmation flag, AND the settled buy
+    // amount. Keep them in one match so the mode invariants are visible.
+    let (
+        gas_used,
+        effective_gas_price,
+        tx_hash,
+        explorer_url,
+        block_number,
+        dry_run,
+        needs_confirmation,
+        settled_buy,
+    ) = match result {
+        Some(SwapResult::Success(receipt)) => (
+            Some(receipt.gas_used.to_string()),
+            Some(receipt.effective_gas_price.to_string()),
+            Some(receipt.tx_hash.clone()),
+            Some(chain_info.explorer_tx_url(&receipt.tx_hash)),
+            receipt.block_number,
+            false,
+            false,
+            receipt
+                .settled_buy_amount
+                .map(|v| buy.amount(&v.to_string())),
+        ),
+        Some(SwapResult::DryRun) => (None, None, None, None, None, true, false, None),
+        None => (None, None, None, None, None, false, true, None),
+    };
 
     let output = SwapOutput {
         chain: chain_info.display_name.to_string(),
@@ -391,6 +457,7 @@ fn build_swap_output(
         buy_token: buy.token_info(),
         sell_amount: sell.amount(&quote.sell_amount),
         buy_amount: buy.amount(&quote.buy_amount),
+        buy_amount_settled: settled_buy,
         min_buy_amount: buy.amount(&quote.min_buy_amount),
         rate,
         gas_used,

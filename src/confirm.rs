@@ -8,10 +8,11 @@ use std::io::{self, Write};
 
 /// Result of a confirmation check.
 pub enum ConfirmResult {
-    /// User confirmed (or --yes was passed).
+    /// User confirmed (or `--yes` was passed).
     Confirmed,
-    /// Non-interactive mode (JSON output) without --yes.
-    /// Caller should output the quote data and exit with code 20.
+    /// Non-interactive mode (JSON output) without `--yes`. The caller should
+    /// emit the quote/preview envelope and exit with code 25 ("needs
+    /// confirmation; run again with --yes to execute").
     NeedsConfirmation,
 }
 
@@ -19,8 +20,8 @@ pub enum ConfirmResult {
 ///
 /// - With `--yes`: returns `Confirmed` immediately.
 /// - In human mode without `--yes`: shows summary and prompts user.
-/// - In JSON mode without `--yes`: returns `NeedsConfirmation` so caller
-///   can output the quote before exiting with code 20.
+/// - In JSON mode without `--yes`: returns `NeedsConfirmation` so the caller
+///   can emit the quote envelope before exiting with code 25.
 pub fn confirm_trade(
     output_format: OutputFormat,
     auto_confirm: bool,
@@ -117,7 +118,10 @@ pub fn confirm_or_preview<T: Serialize + HumanDisplay>(
     match confirm_trade(output.format, auto_confirm, output.color, summary)? {
         ConfirmResult::Confirmed => Ok(ConfirmFlow::Confirmed),
         ConfirmResult::NeedsConfirmation => {
-            let _ = output.success(command, preview, metadata, warnings);
+            // exit_code 25 here matches the caller's `return Ok(25);` —
+            // keeps the JSON envelope's `exit_code` field in sync with the
+            // process exit.
+            let _ = output.success(command, preview, 25, metadata, warnings);
             Ok(ConfirmFlow::PreviewEmitted)
         }
     }

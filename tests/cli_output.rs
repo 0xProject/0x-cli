@@ -100,6 +100,20 @@ fn test_chains_json_is_valid() {
     assert!(first.get("name").is_some());
     assert!(first.get("native_token").is_some());
     assert!(first.get("chain_type").is_some());
+    // EVM chain ids must be JSON numbers per the documented contract.
+    assert!(
+        first["id"].is_u64(),
+        "EVM chain id should be a JSON number, got {}",
+        first["id"]
+    );
+
+    // Solana entry must serialize id as the string "solana" — pre-pass-3 it
+    // was `null` because of an `#[serde(untagged)]` unit variant.
+    let solana = chains
+        .iter()
+        .find(|c| c["name"] == "solana")
+        .expect("solana entry");
+    assert_eq!(solana["id"], "solana");
 }
 
 #[test]
@@ -119,6 +133,8 @@ fn test_chains_json_envelope() {
     assert!(json["data"].is_array());
     assert!(json["warnings"].is_array());
     assert!(json["metadata"].is_object());
+    // exit_code in envelope must match process exit code (here, 0).
+    assert_eq!(json["exit_code"], 0);
 }
 
 // ─── Error Handling ───────────────────────────────────────────
@@ -138,12 +154,17 @@ fn test_swap_unknown_chain() {
     let output = cmd()
         .args([
             "swap",
-            "--chain", "notachain",
-            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "--buy", "0x4200000000000000000000000000000000000006",
-            "--amount", "100",
+            "--chain",
+            "notachain",
+            "--sell",
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy",
+            "0x4200000000000000000000000000000000000006",
+            "--amount",
+            "100",
             "--yes",
-            "-o", "json",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
@@ -164,12 +185,17 @@ fn test_swap_no_wallet_json_error() {
     let output = cmd
         .args([
             "swap",
-            "--chain", "base",
-            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "--buy", "0x4200000000000000000000000000000000000006",
-            "--amount", "1000000",
+            "--chain",
+            "base",
+            "--sell",
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy",
+            "0x4200000000000000000000000000000000000006",
+            "--amount",
+            "1000000",
             "--yes",
-            "-o", "json",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
@@ -185,15 +211,22 @@ fn test_swap_no_wallet_json_error() {
 
 #[test]
 fn test_swap_no_wallet_envelope_error() {
-    let output = cmd()
+    let (mut cmd, _tmp) = cmd_in_temp_home();
+    cmd.env("ZEROX_API_KEY", "dummy-test-key");
+    let output = cmd
         .args([
             "swap",
-            "--chain", "base",
-            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "--buy", "0x4200000000000000000000000000000000000006",
-            "--amount", "100",
+            "--chain",
+            "base",
+            "--sell",
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy",
+            "0x4200000000000000000000000000000000000006",
+            "--amount",
+            "100",
             "--yes",
-            "-o", "json-envelope",
+            "-o",
+            "json-envelope",
         ])
         .output()
         .expect("failed to run");
@@ -212,15 +245,23 @@ fn test_swap_no_wallet_envelope_error() {
 
 #[test]
 fn test_solana_swap_no_wallet() {
-    let output = cmd()
+    let (mut cmd, _tmp) = cmd_in_temp_home();
+    cmd.env("ZEROX_API_KEY", "dummy-test-key")
+        .env_remove("ZEROX_SOLANA_KEYPAIR");
+    let output = cmd
         .args([
             "swap",
-            "--chain", "solana",
-            "--sell", "So11111111111111111111111111111111111111112",
-            "--buy", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "--amount", "1000000000",
+            "--chain",
+            "solana",
+            "--sell",
+            "So11111111111111111111111111111111111111112",
+            "--buy",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "--amount",
+            "1000000000",
             "--yes",
-            "-o", "json",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
@@ -239,14 +280,21 @@ fn test_cross_chain_no_wallet() {
     let output = cmd
         .args([
             "cross-chain",
-            "--from", "base",
-            "--to", "arbitrum",
-            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "--buy", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-            "--amount", "100",
-            "--select-quote", "0",
+            "--from",
+            "base",
+            "--to",
+            "arbitrum",
+            "--sell",
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy",
+            "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+            "--amount",
+            "100",
+            "--select-quote",
+            "0",
             "--yes",
-            "-o", "json",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
@@ -274,13 +322,21 @@ fn test_config_set_plaintext_stores_in_file() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
     let output = cmd
         .args([
-            "config", "set", "wallet.evm",
+            "config",
+            "set",
+            "wallet.evm",
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-            "--plaintext", "-o", "json",
+            "--plaintext",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(json["key"], "wallet.evm");
     assert_eq!(json["value"], "***redacted***");
@@ -292,13 +348,20 @@ fn test_config_set_solana_path_stays_in_config() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
     let output = cmd
         .args([
-            "config", "set", "wallet.solana",
+            "config",
+            "set",
+            "wallet.solana",
             "/tmp/some-keypair.json",
-            "-o", "json",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
     assert_eq!(json["storage"], "config");
 }
@@ -308,9 +371,13 @@ fn test_config_unset_clears_plaintext() {
     let (mut set_cmd, tmp) = cmd_in_temp_home();
     set_cmd
         .args([
-            "config", "set", "wallet.evm",
+            "config",
+            "set",
+            "wallet.evm",
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-            "--plaintext", "-o", "json",
+            "--plaintext",
+            "-o",
+            "json",
         ])
         .assert()
         .success();
@@ -318,7 +385,8 @@ fn test_config_unset_clears_plaintext() {
     // Re-use the temp HOME for unset + get.
     let mut unset = Command::cargo_bin("0x").unwrap();
     unset.env("HOME", tmp.path());
-    let out = unset.args(["config", "unset", "wallet.evm", "-o", "json"])
+    let out = unset
+        .args(["config", "unset", "wallet.evm", "-o", "json"])
         .output()
         .expect("unset failed");
     assert!(out.status.success());
@@ -327,7 +395,8 @@ fn test_config_unset_clears_plaintext() {
 
     let mut get = Command::cargo_bin("0x").unwrap();
     get.env("HOME", tmp.path());
-    let out = get.args(["config", "get", "wallet.evm", "-o", "json"])
+    let out = get
+        .args(["config", "get", "wallet.evm", "-o", "json"])
         .output()
         .expect("get failed");
     assert!(!out.status.success());
@@ -352,13 +421,21 @@ fn test_config_unset_noop_returns_changed_false() {
 fn test_config_unset_rpc_clears_it() {
     let (mut set_cmd, tmp) = cmd_in_temp_home();
     set_cmd
-        .args(["config", "set", "rpc.base", "https://base.example.com", "-o", "json"])
+        .args([
+            "config",
+            "set",
+            "rpc.base",
+            "https://base.example.com",
+            "-o",
+            "json",
+        ])
         .assert()
         .success();
 
     let mut unset = Command::cargo_bin("0x").unwrap();
     unset.env("HOME", tmp.path());
-    let out = unset.args(["config", "unset", "rpc.base", "-o", "json"])
+    let out = unset
+        .args(["config", "unset", "rpc.base", "-o", "json"])
         .output()
         .expect("unset failed");
     assert!(out.status.success());
@@ -367,7 +444,8 @@ fn test_config_unset_rpc_clears_it() {
 
     let mut show = Command::cargo_bin("0x").unwrap();
     show.env("HOME", tmp.path());
-    let out = show.args(["config", "show", "-o", "json"])
+    let out = show
+        .args(["config", "show", "-o", "json"])
         .output()
         .expect("show failed");
     assert!(out.status.success());
@@ -404,11 +482,16 @@ fn test_price_without_api_key_exits_5() {
         .env_remove("ZEROX_API_KEY")
         .args([
             "price",
-            "--chain", "base",
-            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "--buy", "0x4200000000000000000000000000000000000006",
-            "--amount", "1000000",
-            "-o", "json",
+            "--chain",
+            "base",
+            "--sell",
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy",
+            "0x4200000000000000000000000000000000000006",
+            "--amount",
+            "1000000",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
@@ -423,12 +506,7 @@ fn test_price_without_api_key_exits_5() {
 #[test]
 fn test_status_gasless_without_chain() {
     let output = cmd()
-        .args([
-            "status",
-            "0xabc123",
-            "--type", "gasless",
-            "-o", "json",
-        ])
+        .args(["status", "0xabc123", "--type", "gasless", "-o", "json"])
         .output()
         .expect("failed to run");
 
@@ -438,45 +516,67 @@ fn test_status_gasless_without_chain() {
 
 #[test]
 fn test_swap_zero_amount_rejected() {
-    let output = cmd()
-        .env("ZEROX_EVM_PRIVATE_KEY", "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+    let (mut cmd, _tmp) = cmd_in_temp_home();
+    let output = cmd
+        .env(
+            "ZEROX_EVM_PRIVATE_KEY",
+            "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        )
         .env("ZEROX_API_KEY", "test")
         .args([
             "swap",
-            "--chain", "solana",
-            "--sell", "So11111111111111111111111111111111111111112",
-            "--buy", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-            "--amount", "0",
+            "--chain",
+            "solana",
+            "--sell",
+            "So11111111111111111111111111111111111111112",
+            "--buy",
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "--amount",
+            "0",
             "--yes",
-            "-o", "json",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
 
     assert!(!output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("invalid JSON error");
+    // Validate base-unit amount runs first; zero amount is INPUT_INVALID.
+    assert_eq!(json["code"], "INPUT_INVALID");
 }
 
 #[test]
 fn test_dry_run_flag_accepted() {
-    // Just verify the flag is accepted without crashing
-    let output = cmd()
+    // Verify --dry-run parses and doesn't change argument validation.
+    // We run with no wallet so the call short-circuits at WALLET_NOT_FOUND
+    // before any RPC / API call.
+    let (mut cmd, _tmp) = cmd_in_temp_home();
+    cmd.env("ZEROX_API_KEY", "dummy-test-key")
+        .env_remove("ZEROX_EVM_PRIVATE_KEY");
+    let output = cmd
         .args([
             "swap",
-            "--chain", "base",
-            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "--buy", "0x4200000000000000000000000000000000000006",
-            "--amount", "100",
+            "--chain",
+            "base",
+            "--sell",
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy",
+            "0x4200000000000000000000000000000000000006",
+            "--amount",
+            "100",
             "--dry-run",
             "--yes",
-            "-o", "json",
+            "-o",
+            "json",
         ])
         .output()
         .expect("failed to run");
 
-    // Will fail (no wallet), but --dry-run should be parsed without error
     assert!(!output.status.success());
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("invalid JSON");
-    // Error should be about wallet, not about unrecognized flag
-    assert_ne!(json["code"], "INPUT_INVALID");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("invalid JSON");
+    // Wallet missing — confirms --dry-run was accepted by clap and we
+    // reached the wallet-load step without an arg-parse failure.
+    assert_eq!(json["code"], "WALLET_NOT_FOUND");
 }

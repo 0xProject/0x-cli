@@ -1,9 +1,9 @@
 use clap::Parser;
+use std::io::IsTerminal;
 use zero_x_cli::cli::{Cli, Commands, ConfigAction, SkillAction};
 use zero_x_cli::output::envelope::Metadata;
 use zero_x_cli::output::OutputHandler;
 use zero_x_cli::{cli::OutputFormat, commands, error, GlobalOpts};
-use std::io::IsTerminal;
 
 #[tokio::main]
 async fn main() {
@@ -34,7 +34,8 @@ fn init_tracing(verbose: bool) {
     // Honor RUST_LOG when set; otherwise default to "warn" (or "debug" with --verbose).
     // CLI logs go to stderr so they don't pollute the JSON envelope on stdout.
     let default_level = if verbose { "debug" } else { "warn" };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
     let _ = fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -49,10 +50,12 @@ async fn run_command(
 ) -> Result<i32, error::CliError> {
     match &cli.command {
         Commands::Config { action } => match action {
-            ConfigAction::Init => commands::config_cmd::run_init(output),
-            ConfigAction::Set { key, value, plaintext } => {
-                commands::config_cmd::run_set(key, value, *plaintext, output)
-            }
+            ConfigAction::Init { browser } => commands::config_cmd::run_init(output, *browser),
+            ConfigAction::Set {
+                key,
+                value,
+                plaintext,
+            } => commands::config_cmd::run_set(key, value, *plaintext, output),
             ConfigAction::Get { key } => commands::config_cmd::run_get(key, output),
             ConfigAction::Unset { key } => commands::config_cmd::run_unset(key, output),
             ConfigAction::Show => commands::config_cmd::run_show(output),

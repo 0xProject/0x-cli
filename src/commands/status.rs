@@ -59,16 +59,43 @@ impl HumanDisplay for StatusOutput {
         writeln!(writer, "\n  Status: {status_colored}")?;
         writeln!(writer, "  {}", self.status_detail)?;
 
-        for tx in &self.transactions {
+        // Group each on-chain receipt under its chain header so a
+        // cross-chain status (origin + destination) is unambiguous, instead
+        // of dumping repeated "Tx:" / "Explorer:" pairs that look like a
+        // bug. With a single tx (gasless) the label is still useful.
+        for (i, tx) in self.transactions.iter().enumerate() {
+            if tx.tx_hash.is_none() && tx.explorer_url.is_none() {
+                continue;
+            }
+            let role = match (self.transactions.len(), i) {
+                (1, _) => None,
+                (_, 0) => Some("Origin"),
+                (_, 1) => Some("Destination"),
+                (_, _) => None,
+            };
+            let chain_label = tx.chain_name.as_deref().unwrap_or("");
+            let header = match (role, chain_label.is_empty()) {
+                (Some(r), false) => format!("{r} ({chain_label})"),
+                (Some(r), true) => r.to_string(),
+                (None, false) => chain_label.to_string(),
+                (None, true) => "Transaction".to_string(),
+            };
+            let header_styled = if color {
+                header.bold().to_string()
+            } else {
+                header
+            };
+            writeln!(writer, "\n  {header_styled}")?;
             if let Some(ref hash) = tx.tx_hash {
-                writeln!(writer, "  Tx: {hash}")?;
+                writeln!(writer, "    {:<10} {hash}", "Tx:")?;
             }
             if let Some(ref url) = tx.explorer_url {
-                writeln!(writer, "  Explorer: {url}")?;
+                writeln!(writer, "    {:<10} {url}", "Explorer:")?;
             }
         }
 
         if let Some(ref reason) = self.failure_reason {
+            writeln!(writer)?;
             if color {
                 writeln!(writer, "  Reason: {}", reason.red())?;
             } else {
@@ -138,9 +165,12 @@ async fn run_gasless_status(
 
     if args.poll {
         let spinner = output.spinner("Polling gasless status...");
+        // 10-minute total budget for `status --poll` on gasless, matching
+        // the inline post-swap poll. Decouple from `--poll-interval` so a
+        // user passing a tighter interval doesn't shorten the budget.
         let cfg = crate::api::poll::PollConfig::new(
             args.poll_interval,
-            args.poll_interval.saturating_mul(120),
+            600,
             ErrorCode::TransactionTimeout,
         );
         let resp = crate::api::poll::poll_until_terminal(
@@ -230,11 +260,11 @@ async fn run_cross_chain_status(
 
     if args.poll {
         let spinner = output.spinner("Polling cross-chain status...");
-        let cfg = crate::api::poll::PollConfig::new(
-            args.poll_interval,
-            args.poll_interval.saturating_mul(120),
-            ErrorCode::BridgeTimeout,
-        );
+        // 60-minute total budget — long-tail bridges (cross-VM or
+        // congested finality) can need 15-40 minutes; the old `interval *
+        // 120` cap was only 10 minutes at the default 5s interval.
+        let cfg =
+            crate::api::poll::PollConfig::new(args.poll_interval, 3600, ErrorCode::BridgeTimeout);
         let chain_id_str = chain_info.api_chain_id();
         let resp = crate::api::poll::poll_until_terminal(
             cfg,
@@ -271,20 +301,20 @@ async fn run_cross_chain_status(
     Ok(output.emit_success("status", &result, metadata, Vec::new(), 0))
 }
 
-fn json_chain_id_to_string(v: &serde_json::Value) -> Option<String> {
-    v.as_u64()
-        .map(|n| n.to_string())
-        .or_else(|| v.as_str().map(|s| s.to_string()))
-}
+fn cross_chain_to_output(resp: &crate::api::cross_chain::CrossChainStatusResponse) -> StatusOutput {
+    // The cross-chain status API returns `chain_id` as either a JSON number
+    // (EVM) or a JSON string ("solana"); accept both.
+    fn chain_id_to_string(v: &serde_json::Value) -> Option<String> {
+        v.as_u64()
+            .map(|n| n.to_string())
+            .or_else(|| v.as_str().map(|s| s.to_string()))
+    }
 
-fn cross_chain_to_output(
-    resp: &crate::api::cross_chain::CrossChainStatusResponse,
-) -> StatusOutput {
     let transactions = resp
         .transactions
         .iter()
         .map(|t| {
-            let chain_id_str = t.chain_id.as_ref().and_then(json_chain_id_to_string);
+            let chain_id_str = t.chain_id.as_ref().and_then(chain_id_to_string);
             let resolved = chain_id_str
                 .as_deref()
                 .and_then(|id| chain::resolve_chain(id).ok());

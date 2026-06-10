@@ -197,12 +197,18 @@ mod tests {
     #[test]
     fn test_native_token_detection() {
         // Canonical pseudo-addresses, case-insensitive.
-        assert!(is_native_token("0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"));
-        assert!(is_native_token("0x0000000000000000000000000000000000000000"));
+        assert!(is_native_token(
+            "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+        ));
+        assert!(is_native_token(
+            "0x0000000000000000000000000000000000000000"
+        ));
         // Real ERC-20 addresses must not match, even if their hex happens to
         // contain the substring "eth" (the old contains() check matched
         // 0x3 ... ETH ... → 0x3...eth... — see USDT on Ethereum).
-        assert!(!is_native_token("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"));
+        assert!(!is_native_token(
+            "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+        ));
         assert!(!is_native_token(
             "0xdAC17F958D2ee523a2206206994597C13D831ec7"
         ));
@@ -254,7 +260,17 @@ mod tests {
             },
         );
 
-        assert_eq!(cache.cache.get(&(1, "0xabc".to_string())).unwrap().decimals, 18);
-        assert_eq!(cache.cache.get(&(137, "0xabc".to_string())).unwrap().decimals, 6);
+        assert_eq!(
+            cache.cache.get(&(1, "0xabc".to_string())).unwrap().decimals,
+            18
+        );
+        assert_eq!(
+            cache
+                .cache
+                .get(&(137, "0xabc".to_string()))
+                .unwrap()
+                .decimals,
+            6
+        );
     }
 }

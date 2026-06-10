@@ -181,7 +181,6 @@ impl ApiClient {
 
         self.get("/swap/allowance-holder/quote", &params).await
     }
-
 }
 
 #[cfg(test)]

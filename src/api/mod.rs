@@ -254,17 +254,6 @@ impl ApiClient {
         self.send(path, req).await
     }
 
-    /// POST to the Solana API. The 0x Solana API doesn't read `0x-version`,
-    /// but sending it does no harm — kept on the shared client so we don't
-    /// fork the request path.
-    pub async fn post_solana<B: serde::Serialize, T: serde::de::DeserializeOwned>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T, CliError> {
-        self.post(path, body).await
-    }
-
     /// Send a request and decode the response. Retries on transient failures
     /// (408/425/429/5xx, network errors) are handled by the
     /// `RetryTransientMiddleware`; this function only sees the final response
@@ -417,7 +406,8 @@ impl ApiClient {
                 Some("INSUFFICIENT_ALLOWANCE") => ErrorCode::InsufficientAllowance,
                 Some("INPUT_INVALID") | Some("SWAP_VALIDATION_FAILED") => ErrorCode::InputInvalid,
                 Some("RECIPIENT_NOT_SUPPORTED") => ErrorCode::TokenNotSupported,
-                Some("TOKEN_NOT_SUPPORTED") | Some("SELL_TOKEN_NOT_AUTHORIZED_FOR_TRADE")
+                Some("TOKEN_NOT_SUPPORTED")
+                | Some("SELL_TOKEN_NOT_AUTHORIZED_FOR_TRADE")
                 | Some("BUY_TOKEN_NOT_AUTHORIZED_FOR_TRADE") => ErrorCode::TokenNotSupported,
                 Some("SELL_AMOUNT_TOO_SMALL") => ErrorCode::SellAmountTooSmall,
                 Some("USER_NOT_AUTHORIZED") | Some("TAKER_NOT_AUTHORIZED_FOR_TRADE") => {
@@ -578,10 +568,25 @@ mod tests {
 
     #[test]
     fn test_endpoint_kind_from_path() {
-        assert_eq!(EndpointKind::from_path("/solana/swap-instructions"), EndpointKind::Solana);
-        assert_eq!(EndpointKind::from_path("/cross-chain/quotes"), EndpointKind::CrossChain);
-        assert_eq!(EndpointKind::from_path("/gasless/quote"), EndpointKind::Gasless);
-        assert_eq!(EndpointKind::from_path("/swap/allowance-holder/quote"), EndpointKind::EvmSwap);
-        assert_eq!(EndpointKind::from_path("/something-else"), EndpointKind::Other);
+        assert_eq!(
+            EndpointKind::from_path("/solana/swap-instructions"),
+            EndpointKind::Solana
+        );
+        assert_eq!(
+            EndpointKind::from_path("/cross-chain/quotes"),
+            EndpointKind::CrossChain
+        );
+        assert_eq!(
+            EndpointKind::from_path("/gasless/quote"),
+            EndpointKind::Gasless
+        );
+        assert_eq!(
+            EndpointKind::from_path("/swap/allowance-holder/quote"),
+            EndpointKind::EvmSwap
+        );
+        assert_eq!(
+            EndpointKind::from_path("/something-else"),
+            EndpointKind::Other
+        );
     }
 }

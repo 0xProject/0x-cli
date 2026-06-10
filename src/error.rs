@@ -59,9 +59,6 @@ pub enum ErrorCode {
 
     // User errors
     UserCancelled,
-
-    // Catch-all
-    Unknown,
 }
 
 impl ErrorCode {
@@ -70,18 +67,22 @@ impl ErrorCode {
             Self::ConfigNotFound | Self::ConfigInvalid | Self::ApiKeyMissing => "config",
             Self::WalletNotFound | Self::WalletInvalid | Self::KeyringUnavailable => "config",
             Self::InputInvalid | Self::ChainNotSupported => "input",
-            Self::InsufficientBalance | Self::InsufficientAllowance | Self::NoLiquidity
-            | Self::TokenNotSupported | Self::SellAmountTooSmall => "validation",
+            Self::InsufficientBalance
+            | Self::InsufficientAllowance
+            | Self::NoLiquidity
+            | Self::TokenNotSupported
+            | Self::SellAmountTooSmall => "validation",
             Self::NetworkError | Self::NetworkTimeout | Self::RpcError | Self::ApiRateLimited => {
                 "network"
             }
             Self::InternalServerError | Self::ApiError | Self::ApiAccessDenied => "api",
             Self::SigningFailed | Self::InvalidSignature => "signing",
-            Self::SimulationFailed | Self::TransactionReverted | Self::TransactionTimeout
+            Self::SimulationFailed
+            | Self::TransactionReverted
+            | Self::TransactionTimeout
             | Self::QuoteExpired => "execution",
             Self::BridgeFailed | Self::BridgeTimeout => "bridge",
             Self::UserCancelled => "input",
-            Self::Unknown => "unknown",
         }
     }
 
@@ -101,12 +102,18 @@ impl ErrorCode {
 
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::ConfigNotFound | Self::ConfigInvalid
-            | Self::WalletNotFound | Self::WalletInvalid | Self::KeyringUnavailable => 3,
+            Self::ConfigNotFound
+            | Self::ConfigInvalid
+            | Self::WalletNotFound
+            | Self::WalletInvalid
+            | Self::KeyringUnavailable => 3,
             Self::ApiKeyMissing => 5,
             Self::InputInvalid | Self::ChainNotSupported => 2,
-            Self::InsufficientBalance | Self::InsufficientAllowance | Self::NoLiquidity
-            | Self::TokenNotSupported | Self::SellAmountTooSmall => 6,
+            Self::InsufficientBalance
+            | Self::InsufficientAllowance
+            | Self::NoLiquidity
+            | Self::TokenNotSupported
+            | Self::SellAmountTooSmall => 6,
             Self::NetworkError | Self::NetworkTimeout | Self::RpcError | Self::ApiRateLimited => 4,
             Self::InternalServerError | Self::ApiError => 4,
             Self::ApiAccessDenied => 5,
@@ -118,7 +125,6 @@ impl ErrorCode {
             Self::BridgeFailed => 1,
             Self::BridgeTimeout => 12,
             Self::UserCancelled => 20,
-            Self::Unknown => 1,
         }
     }
 }
@@ -158,7 +164,6 @@ impl ErrorCode {
             Self::BridgeFailed => "BRIDGE_FAILED",
             Self::BridgeTimeout => "BRIDGE_TIMEOUT",
             Self::UserCancelled => "USER_CANCELLED",
-            Self::Unknown => "UNKNOWN",
         }
     }
 }
@@ -173,10 +178,7 @@ impl fmt::Display for ErrorCode {
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error("{message}")]
-    Config {
-        code: ErrorCode,
-        message: String,
-    },
+    Config { code: ErrorCode, message: String },
 
     #[error("{message}")]
     Api {
@@ -188,10 +190,7 @@ pub enum CliError {
     },
 
     #[error("{message}")]
-    Wallet {
-        code: ErrorCode,
-        message: String,
-    },
+    Wallet { code: ErrorCode, message: String },
 
     #[error("{message}")]
     Transaction {
@@ -202,10 +201,7 @@ pub enum CliError {
     },
 
     #[error("Operation timed out: {message}")]
-    Timeout {
-        code: ErrorCode,
-        message: String,
-    },
+    Timeout { code: ErrorCode, message: String },
 
     #[error("Cancelled by user")]
     UserCancelled,
@@ -277,6 +273,60 @@ impl CliError {
         }
     }
 
+    /// Append (or set) a hint on the suggestion field. Only the Api and
+    /// Transaction variants carry a suggestion; everything else passes through
+    /// unchanged. Used by the RPC layer to add a "configure a private RPC"
+    /// line when a request fails on a built-in public endpoint.
+    pub fn append_suggestion(self, extra: &str) -> Self {
+        match self {
+            Self::Api {
+                code,
+                message,
+                status,
+                details,
+                suggestion,
+            } => Self::Api {
+                code,
+                message,
+                status,
+                details,
+                suggestion: Some(match suggestion {
+                    Some(s) => format!("{s} {extra}"),
+                    None => extra.to_string(),
+                }),
+            },
+            Self::Transaction {
+                code,
+                message,
+                tx_hash,
+                suggestion,
+            } => Self::Transaction {
+                code,
+                message,
+                tx_hash,
+                suggestion: Some(match suggestion {
+                    Some(s) => format!("{s} {extra}"),
+                    None => extra.to_string(),
+                }),
+            },
+            other => other,
+        }
+    }
+}
+
+/// Whether an error code points at the RPC layer specifically (network,
+/// timeouts, rate-limits) rather than user input or on-chain reverts. Used
+/// to decide when to add "this was a public RPC" hints.
+pub fn is_rpc_layer_failure(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::NetworkError
+            | ErrorCode::NetworkTimeout
+            | ErrorCode::RpcError
+            | ErrorCode::ApiRateLimited
+            | ErrorCode::TransactionTimeout
+            | ErrorCode::InternalServerError
+    )
 }
 
 /// Serializable error detail for JSON output.
@@ -346,7 +396,6 @@ mod tests {
             ErrorCode::BridgeFailed,
             ErrorCode::BridgeTimeout,
             ErrorCode::UserCancelled,
-            ErrorCode::Unknown,
         ];
         for v in variants {
             let serde_name = serde_json::to_string(&v).unwrap();

@@ -1,4 +1,5 @@
 pub mod evm;
+pub mod retry;
 pub mod solana;
 
 use crate::error::CliError;
@@ -16,6 +17,12 @@ pub struct ChainInfo {
     pub native_token: &'static str,
     pub explorer_url: &'static str,
     pub chain_type: ChainType,
+    /// Built-in public RPC URL for this chain. `None` for chains where no
+    /// canonical public RPC is stable enough to ship; users must
+    /// `0x config set rpc.<chain> <url>` for those. Surfaced in
+    /// `0x chains` so agents can see what URL the CLI falls back to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_rpc_url: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -25,9 +32,13 @@ pub enum ChainType {
     Svm,
 }
 
-/// Chain identifier that supports both numeric IDs and string names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
+/// Chain identifier that supports both numeric IDs and the special "solana"
+/// string identifier the 0x API uses for SVM. JSON encoding is hand-rolled so
+/// `Numeric(8453)` becomes the JSON number `8453` and `Solana` becomes the
+/// JSON string `"solana"` — the help text on `0x chains` documents this as
+/// `id: number|string`. (A derived `#[serde(untagged)]` would emit `null` for
+/// the unit variant, which would silently break agents matching on the field.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChainId {
     Numeric(u64),
     Solana,
@@ -38,6 +49,15 @@ impl std::fmt::Display for ChainId {
         match self {
             ChainId::Numeric(id) => write!(f, "{id}"),
             ChainId::Solana => write!(f, "solana"),
+        }
+    }
+}
+
+impl Serialize for ChainId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ChainId::Numeric(id) => serializer.serialize_u64(*id),
+            ChainId::Solana => serializer.serialize_str("solana"),
         }
     }
 }
@@ -73,7 +93,9 @@ impl ChainInfo {
     }
 }
 
-/// Static chain registry.
+/// Static chain registry. `default_rpc_url` is the built-in public RPC
+/// each chain team documents; `None` for chains where the canonical
+/// public endpoint isn't stable enough to ship — users configure their own.
 const CHAINS: &[ChainInfo] = &[
     ChainInfo {
         id: ChainId::Numeric(1),
@@ -82,6 +104,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://etherscan.io",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://eth.merkle.io"),
     },
     ChainInfo {
         id: ChainId::Numeric(137),
@@ -90,6 +113,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "POL",
         explorer_url: "https://polygonscan.com",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://polygon.drpc.org"),
     },
     ChainInfo {
         id: ChainId::Numeric(56),
@@ -98,6 +122,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "BNB",
         explorer_url: "https://bscscan.com",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://56.rpc.thirdweb.com"),
     },
     ChainInfo {
         id: ChainId::Numeric(42161),
@@ -106,6 +131,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://arbiscan.io",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://arb1.arbitrum.io/rpc"),
     },
     ChainInfo {
         id: ChainId::Numeric(10),
@@ -114,6 +140,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://optimistic.etherscan.io",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://mainnet.optimism.io"),
     },
     ChainInfo {
         id: ChainId::Numeric(8453),
@@ -122,6 +149,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://basescan.org",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://mainnet.base.org"),
     },
     ChainInfo {
         id: ChainId::Numeric(43114),
@@ -130,6 +158,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "AVAX",
         explorer_url: "https://snowtrace.io",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://api.avax.network/ext/bc/C/rpc"),
     },
     ChainInfo {
         id: ChainId::Numeric(59144),
@@ -138,6 +167,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://lineascan.build",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.linea.build"),
     },
     ChainInfo {
         id: ChainId::Numeric(534352),
@@ -146,6 +176,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://scrollscan.com",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.scroll.io"),
     },
     ChainInfo {
         id: ChainId::Numeric(81457),
@@ -154,6 +185,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://blastscan.io",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.blast.io"),
     },
     ChainInfo {
         id: ChainId::Numeric(5000),
@@ -162,6 +194,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "MNT",
         explorer_url: "https://mantlescan.xyz",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.mantle.xyz"),
     },
     ChainInfo {
         id: ChainId::Numeric(80094),
@@ -170,6 +203,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "BERA",
         explorer_url: "https://berascan.com",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.berachain.com"),
     },
     ChainInfo {
         id: ChainId::Numeric(146),
@@ -178,6 +212,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "S",
         explorer_url: "https://sonicscan.org",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.soniclabs.com"),
     },
     ChainInfo {
         id: ChainId::Numeric(130),
@@ -186,6 +221,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://uniscan.xyz",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://mainnet.unichain.org"),
     },
     ChainInfo {
         id: ChainId::Numeric(480),
@@ -194,6 +230,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://worldscan.org",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://worldchain-mainnet.g.alchemy.com/public"),
     },
     ChainInfo {
         id: ChainId::Numeric(2741),
@@ -202,6 +239,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://abscan.org",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://api.mainnet.abs.xyz"),
     },
     ChainInfo {
         id: ChainId::Numeric(57073),
@@ -210,6 +248,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "ETH",
         explorer_url: "https://explorer.inkonchain.com",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc-gel.inkonchain.com"),
     },
     ChainInfo {
         id: ChainId::Numeric(143),
@@ -218,6 +257,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "MON",
         explorer_url: "https://monadexplorer.com",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.monad.xyz"),
     },
     ChainInfo {
         id: ChainId::Numeric(999),
@@ -226,6 +266,7 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "HYPE",
         explorer_url: "https://hyperscan.xyz",
         chain_type: ChainType::Evm,
+        default_rpc_url: Some("https://rpc.hyperliquid.xyz/evm"),
     },
     ChainInfo {
         id: ChainId::Solana,
@@ -234,8 +275,16 @@ const CHAINS: &[ChainInfo] = &[
         native_token: "SOL",
         explorer_url: "https://solscan.io",
         chain_type: ChainType::Svm,
+        default_rpc_url: Some("https://api.mainnet-beta.solana.com"),
     },
 ];
+
+/// Read-only view of every supported chain. Consumers iterate this for
+/// menus / config wizards / docs without needing access to the private
+/// constant.
+pub fn all_chains() -> &'static [ChainInfo] {
+    CHAINS
+}
 
 /// Resolve a chain from a name or ID string.
 pub fn resolve_chain(input: &str) -> Result<&'static ChainInfo, CliError> {
@@ -261,12 +310,16 @@ pub fn resolve_chain(input: &str) -> Result<&'static ChainInfo, CliError> {
 }
 
 /// Validate that a token looks like a valid address for the given chain type.
-/// For EVM: must start with 0x and be 42 chars (20 bytes hex).
-/// For Solana: must be base58 encoded (32-44 chars, alphanumeric).
-/// Returns Ok(()) if valid, Err with helpful message if not.
+/// For EVM: must start with `0x` and be 42 chars of hex (20-byte address).
+/// For Solana: must base58-decode to exactly 32 bytes (a `Pubkey`). The
+/// length-only check we used to do here accepted obvious junk like a
+/// 32-char string of `!!!!` and only failed later at the API.
 pub fn validate_token_address(token: &str, chain_info: &ChainInfo) -> Result<(), CliError> {
     if chain_info.is_evm() {
-        if !token.starts_with("0x") || token.len() != 42 {
+        let valid_evm = token.len() == 42
+            && token.starts_with("0x")
+            && token[2..].chars().all(|c| c.is_ascii_hexdigit());
+        if !valid_evm {
             return Err(CliError::Api {
                 code: crate::error::ErrorCode::InputInvalid,
                 message: format!("'{token}' is not a valid EVM token address"),
@@ -277,18 +330,23 @@ pub fn validate_token_address(token: &str, chain_info: &ChainInfo) -> Result<(),
                 ),
             });
         }
-    } else if chain_info.is_solana()
-        && (token.len() < 32 || token.len() > 44 || token.starts_with("0x"))
-    {
-        return Err(CliError::Api {
-            code: crate::error::ErrorCode::InputInvalid,
-            message: format!("'{token}' is not a valid Solana token address"),
-            status: None,
-            details: None,
-            suggestion: Some(
-                "Use the base58 mint address, e.g. EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v for USDC on Solana".into()
-            ),
-        });
+    } else if chain_info.is_solana() {
+        // Length pre-check filters obvious junk and avoids hammering bs58 with
+        // megabytes of data. The 32-byte check is the real guard.
+        let plausible_length = (32..=44).contains(&token.len()) && !token.starts_with("0x");
+        let valid_pubkey =
+            plausible_length && matches!(bs58::decode(token).into_vec(), Ok(b) if b.len() == 32);
+        if !valid_pubkey {
+            return Err(CliError::Api {
+                code: crate::error::ErrorCode::InputInvalid,
+                message: format!("'{token}' is not a valid Solana token address"),
+                status: None,
+                details: None,
+                suggestion: Some(
+                    "Use the base58 mint address, e.g. EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v for USDC on Solana".into()
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -333,6 +391,7 @@ impl HumanDisplay for ChainsList {
                 "Network".into(),
                 "Native Token".into(),
                 "Explorer".into(),
+                "Default RPC".into(),
             ],
             rows: CHAINS
                 .iter()
@@ -343,6 +402,7 @@ impl HumanDisplay for ChainsList {
                         c.display_name.to_string(),
                         c.native_token.to_string(),
                         c.explorer_url.to_string(),
+                        c.default_rpc_url.unwrap_or("—").to_string(),
                     ]
                 })
                 .collect(),
@@ -399,6 +459,55 @@ mod tests {
         assert_eq!(
             chain.explorer_tx_url("0xabc"),
             "https://basescan.org/tx/0xabc"
+        );
+    }
+
+    #[test]
+    fn test_validate_evm_token_address() {
+        let base = resolve_chain("base").unwrap();
+        // Canonical USDC on Base.
+        assert!(validate_token_address("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", base).is_ok());
+        // Length wrong.
+        assert!(validate_token_address("0xabc", base).is_err());
+        // Missing 0x.
+        assert!(validate_token_address("833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", base).is_err());
+        // Non-hex body — pass-3 added this check; the prior length+prefix
+        // gate would have accepted this.
+        assert!(
+            validate_token_address("0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", base).is_err()
+        );
+    }
+
+    #[test]
+    fn test_validate_solana_token_address() {
+        let solana = resolve_chain("solana").unwrap();
+        // Canonical USDC mint on Solana.
+        assert!(
+            validate_token_address("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", solana).is_ok()
+        );
+        // EVM-shaped address rejected.
+        assert!(
+            validate_token_address("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", solana).is_err()
+        );
+        // Pass-3 boundary: 32 chars but not base58-decodable to 32 bytes.
+        // `!` isn't in the base58 alphabet — pre-pass-3 this passed.
+        assert!(validate_token_address("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", solana).is_err());
+        // Too short.
+        assert!(validate_token_address("abc", solana).is_err());
+    }
+
+    #[test]
+    fn test_chain_id_serializes_as_number_or_solana_string() {
+        // The `0x chains` JSON contract documents id as `number|string`. The
+        // previous `#[serde(untagged)]` derive emitted `null` for the Solana
+        // unit variant — this test pins the hand-rolled Serialize impl.
+        assert_eq!(
+            serde_json::to_string(&ChainId::Numeric(8453)).unwrap(),
+            "8453"
+        );
+        assert_eq!(
+            serde_json::to_string(&ChainId::Solana).unwrap(),
+            "\"solana\""
         );
     }
 }

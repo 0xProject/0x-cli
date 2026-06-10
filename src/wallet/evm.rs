@@ -9,15 +9,17 @@ use std::str::FromStr;
 /// Keyring failures (no daemon, denied access, etc.) fall through silently to
 /// the config file rather than aborting the load — `config set` is the place
 /// where keyring errors should surface, not arbitrary read paths.
-pub fn load_evm_signer(config: &AppConfig, cli_wallet: Option<&str>) -> Result<PrivateKeySigner, CliError> {
+pub fn load_evm_signer(
+    config: &AppConfig,
+    cli_wallet: Option<&str>,
+) -> Result<PrivateKeySigner, CliError> {
     let key = if let Some(wallet_arg) = cli_wallet {
         wallet_arg.to_string()
     } else if let Ok(env_key) = std::env::var("ZEROX_EVM_PRIVATE_KEY") {
         env_key
-    } else if let Some(keyring_key) = crate::wallet::keyring_store::get(
-        crate::wallet::keyring_store::keys::WALLET_EVM,
-    )
-    .unwrap_or(None)
+    } else if let Some(keyring_key) =
+        crate::wallet::keyring_store::get(crate::wallet::keyring_store::keys::WALLET_EVM)
+            .unwrap_or(None)
     {
         keyring_key
     } else if let Some(ref config_key) = config.wallet.evm {
@@ -50,7 +52,9 @@ mod tests {
     fn test_load_signer_from_hex() {
         let config = AppConfig {
             wallet: crate::config::types::WalletConfig {
-                evm: Some("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string()),
+                evm: Some(
+                    "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string(),
+                ),
                 ..Default::default()
             },
             ..Default::default()
@@ -66,7 +70,10 @@ mod tests {
     fn test_load_signer_with_0x_prefix() {
         let config = AppConfig {
             wallet: crate::config::types::WalletConfig {
-                evm: Some("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".to_string()),
+                evm: Some(
+                    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+                        .to_string(),
+                ),
                 ..Default::default()
             },
             ..Default::default()

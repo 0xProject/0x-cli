@@ -114,12 +114,7 @@ pub async fn run(
 ) -> Result<i32, CliError> {
     let config = config::load_config()?;
 
-    let api_key = global
-        .api_key
-        .as_deref()
-        .or(config.api.api_key.as_deref())
-        .ok_or_else(CliError::api_key_missing)?
-        .to_string();
+    let api_key = config::resolve_api_key(global, &config)?;
 
     let client = ApiClient::new(api_key, global.timeout)?;
 

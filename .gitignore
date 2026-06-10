@@ -20,3 +20,8 @@
 
 # Local Claude Code overrides (project-specific permission grants, etc.)
 .claude/settings.local.json
+
+# 0x API OpenAPI specs — local reference material, not part of the build
+cross_chain_openapi.json
+evm_swap_gasless_openapi.json
+solana_openapi.yaml

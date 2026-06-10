@@ -83,6 +83,20 @@ impl ChainInfo {
         }
     }
 
+    /// Numeric chain ID for code paths that require an EVM chain. Returns a
+    /// structured error instead of panicking when the chain is non-EVM, so
+    /// command handlers that branched on EVM-vs-Solana earlier degrade
+    /// gracefully if that invariant ever breaks.
+    pub fn evm_chain_id(&self) -> Result<u64, crate::error::CliError> {
+        self.numeric_id().ok_or_else(|| crate::error::CliError::Api {
+            code: crate::error::ErrorCode::InputInvalid,
+            message: format!("'{}' is not an EVM chain", self.name),
+            status: None,
+            details: None,
+            suggestion: Some("Use --chain with an EVM chain like 'base' or 'ethereum'".into()),
+        })
+    }
+
     /// Get the chain identifier for 0x API calls.
     /// For EVM: numeric string. For Solana: "solana".
     pub fn api_chain_id(&self) -> String {

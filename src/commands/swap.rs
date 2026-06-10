@@ -206,14 +206,9 @@ async fn run_evm_swap(
     config: &config::types::AppConfig,
     chain_info: &chain::ChainInfo,
 ) -> Result<i32, CliError> {
-    let chain_id = chain_info.numeric_id().unwrap();
+    let chain_id = chain_info.evm_chain_id()?;
 
-    let api_key = global
-        .api_key
-        .as_deref()
-        .or(config.api.api_key.as_deref())
-        .ok_or_else(CliError::api_key_missing)?
-        .to_string();
+    let api_key = config::resolve_api_key(global, config)?;
 
     let signer = crate::wallet::evm::load_evm_signer(config, global.wallet.as_deref())?;
     let taker_address = format!("{:?}", signer.address());
@@ -268,6 +263,13 @@ async fn run_evm_swap(
         });
     }
 
+    // The API reports balance shortfalls inside the 200 quote response
+    // (`issues.balance`), not as an error — fail here with INSUFFICIENT_BALANCE
+    // instead of letting the swap die later in simulation.
+    if let Some(balance) = quote.issues.as_ref().and_then(|i| i.balance.as_ref()) {
+        return Err(balance.to_error());
+    }
+
     let route = quote
         .route
         .as_ref()
@@ -301,26 +303,11 @@ async fn run_evm_swap(
         .row("Slippage", format!("{:.2}%", args.slippage as f64 / 100.0))
         .row("Route", route_str);
 
-    let needs_approval = quote
-        .issues
-        .as_ref()
-        .and_then(|i| i.allowance.as_ref())
-        .is_some();
-
-    if needs_approval {
-        let spender = quote
-            .issues
-            .as_ref()
-            .unwrap()
-            .allowance
-            .as_ref()
-            .unwrap()
-            .spender
-            .clone();
+    if let Some(allowance) = quote.issues.as_ref().and_then(|i| i.allowance.as_ref()) {
         summary = summary.warning(format!(
             "Approval needed: {} → {}",
             args.sell,
-            truncate_address(&spender)
+            truncate_address(&allowance.spender)
         ));
     }
 

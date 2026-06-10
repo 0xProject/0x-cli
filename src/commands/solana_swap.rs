@@ -77,12 +77,7 @@ pub async fn run(
         });
     }
 
-    let api_key = global
-        .api_key
-        .as_deref()
-        .or(config.api.api_key.as_deref())
-        .ok_or_else(CliError::api_key_missing)?
-        .to_string();
+    let api_key = config::resolve_api_key(global, config)?;
 
     let keypair = crate::wallet::solana::load_solana_keypair(config, global.wallet.as_deref())?;
     let taker = crate::wallet::solana::pubkey_string(&keypair);

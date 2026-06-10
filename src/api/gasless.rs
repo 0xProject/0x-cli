@@ -90,6 +90,8 @@ pub struct GaslessSignable {
 pub struct GaslessIssues {
     #[serde(default)]
     pub allowance: Option<serde_json::Value>,
+    #[serde(default)]
+    pub balance: Option<super::types::BalanceIssue>,
 }
 
 /// Submit request body

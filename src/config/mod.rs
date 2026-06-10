@@ -52,6 +52,22 @@ impl ResolvedRpc {
     }
 }
 
+/// Resolve the 0x API key: `--api-key` flag first, then the config view
+/// (which already has `ZEROX_API_KEY` overlaid by [`load_config`]). Errors
+/// with the structured `API_KEY_MISSING` when neither is set — every command
+/// needs this exact chain, so it lives here instead of being copy-pasted.
+pub fn resolve_api_key(
+    global: &crate::GlobalOpts,
+    config: &AppConfig,
+) -> Result<String, CliError> {
+    global
+        .api_key
+        .as_deref()
+        .or(config.api.api_key.as_deref())
+        .map(str::to_string)
+        .ok_or_else(CliError::api_key_missing)
+}
+
 /// Resolve an RPC URL, preferring `override_url` (CLI flag / env var), then
 /// the config file's `rpc.<name>` or `rpc.<numeric_id>` entry, then the
 /// chain's built-in public default. Errors only when none of the above

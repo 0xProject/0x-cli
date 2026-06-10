@@ -27,8 +27,8 @@ use clap_complete::Shell;
         \x20   3   Config error (missing API key, wallet)\n\
         \x20   4   Network error (retry with backoff)\n\
         \x20   5   Auth error (invalid API key, plan does not include endpoint)\n\
-        \x20   6   Validation error from API (no liquidity, insufficient balance/allowance, token not supported)\n\
-        \x20   10  Simulation failed (do not retry same params)\n\
+        \x20   6   Validation failed (no liquidity, insufficient sell-token balance, token not supported)\n\
+        \x20   10  Simulation failed (transient RPC issue or real revert — inspect the error; one retry is ok)\n\
         \x20   11  Transaction reverted on-chain\n\
         \x20   12  Transaction pending (poll with '0x status')\n\
         \x20   20  User cancelled\n\
@@ -279,19 +279,24 @@ pub enum Commands {
         shell: Shell,
     },
 
-    /// Print the bundled Claude agent skill
+    /// Print or install the bundled agent skill
     #[command(
-        long_about = "Print or manage the bundled Claude agent skill — a\n\
-            markdown document describing how an AI agent should use this CLI\n\
+        long_about = "Print or install the bundled agent skill — markdown\n\
+            documents describing how an AI agent should use this CLI\n\
             (commands, output contract, exit codes, gotchas). The skill is\n\
-            compiled into the binary so it always matches this version.",
+            compiled into the binary so it always matches this version.\n\n\
+            The skill is one SKILL.md entry point plus deep-dive reference\n\
+            topics (gasless, cross-chain, solana, config, tokens, errors)\n\
+            that agents read on demand.",
         after_help = "EXAMPLES:\n\
-            \x20   # Print to stdout\n\
+            \x20   # Print the main skill to stdout\n\
             \x20   0x skill print\n\n\
-            \x20   # Pipe directly into Claude Code's skills directory\n\
-            \x20   0x skill print > ~/.claude/skills/0x.md\n\n\
-            \x20   # Quick peek\n\
-            \x20   0x skill print | less\n\n\
+            \x20   # Print one reference topic\n\
+            \x20   0x skill print --topic errors\n\n\
+            \x20   # Install SKILL.md + references/ into ./.claude/skills/0x-trade/\n\
+            \x20   0x skill install\n\n\
+            \x20   # Install into a custom skills directory\n\
+            \x20   0x skill install --dir ~/.claude/skills\n\n\
             NOTE: `skill print` writes raw markdown to stdout — the global\n\
             -o/--output flag is ignored for this command."
     )]
@@ -304,7 +309,47 @@ pub enum Commands {
 #[derive(Subcommand)]
 pub enum SkillAction {
     /// Write the embedded skill markdown to stdout
-    Print,
+    Print {
+        /// Print a reference topic instead of the main SKILL.md
+        #[arg(long, value_enum)]
+        topic: Option<SkillTopic>,
+    },
+    /// Write the full skill directory (SKILL.md + references/) to disk
+    Install {
+        /// Skills directory to install into (default: ./.claude/skills)
+        #[arg(long)]
+        dir: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum SkillTopic {
+    /// Gasless swaps and trade-hash polling
+    Gasless,
+    /// Cross-chain swaps, quote selection, bridge status
+    CrossChain,
+    /// Solana swaps and flag differences
+    Solana,
+    /// Config, wallets, keyring, env vars
+    Config,
+    /// Supported chains and token addresses
+    Tokens,
+    /// Error catalog and recovery playbook
+    Errors,
+}
+
+impl SkillTopic {
+    /// File stem of the bundled reference (`references/<stem>.md`).
+    pub fn file_stem(&self) -> &'static str {
+        match self {
+            Self::Gasless => "gasless",
+            Self::CrossChain => "cross-chain",
+            Self::Solana => "solana",
+            Self::Config => "config",
+            Self::Tokens => "tokens",
+            Self::Errors => "errors",
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -480,15 +525,15 @@ pub struct SwapArgs {
     #[arg(long, default_value = "100", value_parser = clap::value_parser!(u32).range(0..=10000))]
     pub slippage: u32,
 
-    /// Use gasless swap (no gas needed; EVM only — ignored on Solana)
+    /// Use gasless swap (no gas needed; EVM only — rejected on Solana)
     #[arg(long)]
     pub gasless: bool,
 
-    /// Send output tokens to a different address (EVM only — ignored on Solana)
+    /// Send output tokens to a different address (EVM only — rejected on Solana)
     #[arg(long)]
     pub recipient: Option<String>,
 
-    /// Token approval strategy (EVM only — ignored on Solana)
+    /// Token approval strategy (EVM only — warns and is ignored on Solana)
     #[arg(long, value_enum, default_value = "exact")]
     pub approval: ApprovalStrategy,
 }

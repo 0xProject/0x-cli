@@ -373,12 +373,7 @@ pub async fn run(
     chain::validate_token_address(&args.buy, destination)?;
     chain::validate_base_unit_amount(&args.amount)?;
 
-    let api_key = global
-        .api_key
-        .as_deref()
-        .or(config.api.api_key.as_deref())
-        .ok_or_else(CliError::api_key_missing)?
-        .to_string();
+    let api_key = config::resolve_api_key(global, &config)?;
 
     // Load the origin wallet once. We need its address up-front for the
     // quote request and the same wallet later for approval / signing —
@@ -474,6 +469,13 @@ pub async fn run(
     let selected_idx = select_quote(args, output, &quotes_resp, &buy, global.yes)?;
     let selected = &quotes_resp.quotes[selected_idx];
 
+    // Balance shortfalls arrive inside the 200 quotes response
+    // (`issues.balance`), not as an API error — fail with
+    // INSUFFICIENT_BALANCE before asking the user to confirm a doomed trade.
+    if let Some(balance) = selected.issues.as_ref().and_then(|i| i.balance.as_ref()) {
+        return Err(balance.to_error());
+    }
+
     // Step 3: Confirm
     let summary = TradeSummary::new(format!(
         "Cross-Chain Swap: {} → {}",
@@ -524,12 +526,10 @@ pub async fn run(
                 ));
 
                 // `evm_signer()` returned Some, so the origin chain is EVM and
-                // `numeric_id()` is Some — express that with `.expect` so a
-                // future regression panics instead of silently submitting
-                // chain_id=0 (a real, attestable network).
-                let origin_chain_id = origin
-                    .numeric_id()
-                    .expect("EVM origin chain has a numeric id");
+                // this can't fail; if that invariant ever breaks we get a
+                // structured error instead of silently submitting chain_id=0
+                // (a real, attestable network).
+                let origin_chain_id = origin.evm_chain_id()?;
                 crate::chain::evm::EvmExecutor::ensure_allowance(
                     &origin_rpc.url,
                     origin_chain_id,
@@ -566,9 +566,7 @@ pub async fn run(
 
         // Same reasoning as the ensure_allowance call above — EVM signer
         // implies EVM chain implies Some numeric id.
-        let origin_chain_id = origin
-            .numeric_id()
-            .expect("EVM origin chain has a numeric id");
+        let origin_chain_id = origin.evm_chain_id()?;
         let result = crate::chain::evm::EvmExecutor::execute_swap(
             &rpc.url,
             origin_chain_id,
@@ -958,8 +956,8 @@ async fn resolve_one_evm(
         return None;
     }
     let rpc = config::try_resolve_rpc_url_with_override(rpc_override, config, chain_info);
-    // is_evm() above implies numeric_id is Some — express that explicitly.
-    let chain_id = chain_info.numeric_id().expect("EVM chain has a numeric id");
+    // is_evm() above implies numeric_id is Some; `?` keeps this panic-free.
+    let chain_id = chain_info.numeric_id()?;
     let result = match rpc.as_deref() {
         Some(u) => cache.resolve_evm(u, chain_id, token).await,
         None => None,

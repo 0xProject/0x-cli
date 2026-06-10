@@ -90,13 +90,7 @@ pub async fn run(
 ) -> Result<i32, CliError> {
     let config = config::load_config()?;
 
-    // Resolve API key: CLI flag > config > error
-    let api_key = global
-        .api_key
-        .as_deref()
-        .or(config.api.api_key.as_deref())
-        .ok_or_else(CliError::api_key_missing)?
-        .to_string();
+    let api_key = config::resolve_api_key(global, &config)?;
 
     // Resolve chain
     let chain_info = chain::resolve_chain(&args.chain)?;
@@ -170,7 +164,7 @@ pub async fn run(
         // Use gasless pricing endpoint
         let resp = client
             .get_gasless_price(
-                chain_info.numeric_id().unwrap(),
+                chain_info.evm_chain_id()?,
                 &args.sell,
                 &args.buy,
                 sell_amount,
@@ -195,7 +189,7 @@ pub async fn run(
         let (sell_meta, buy_meta) = resolve_pair_evm(
             &mut cache,
             rpc_url.as_deref(),
-            chain_info.numeric_id().expect("EVM chain has a numeric id"),
+            chain_info.evm_chain_id()?,
             &resp.sell_token,
             &resp.buy_token,
             &mut warnings,
@@ -230,7 +224,7 @@ pub async fn run(
     // Standard EVM price
     let resp = client
         .get_evm_price(
-            chain_info.numeric_id().unwrap(),
+            chain_info.evm_chain_id()?,
             &args.sell,
             &args.buy,
             sell_amount,

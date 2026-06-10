@@ -72,7 +72,8 @@ async fn run_command(
             Ok(0)
         }
         Commands::Skill { action } => match action {
-            SkillAction::Print => commands::skill::run_print(),
+            SkillAction::Print { topic } => commands::skill::run_print(*topic),
+            SkillAction::Install { dir } => commands::skill::run_install(dir.as_deref()),
         },
     }
 }

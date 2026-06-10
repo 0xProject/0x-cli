@@ -76,7 +76,7 @@ pub struct CrossChainTxDetails {
 #[serde(rename_all = "camelCase")]
 pub struct CrossChainIssues {
     pub allowance: Option<CrossChainAllowance>,
-    pub balance: Option<serde_json::Value>,
+    pub balance: Option<super::types::BalanceIssue>,
     #[serde(default)]
     pub simulation_incomplete: bool,
 }

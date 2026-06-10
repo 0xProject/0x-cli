@@ -1,3 +1,4 @@
+use crate::error::{CliError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
 /// A token amount with raw (base units), formatted (human-readable), and optional USD value.
@@ -72,13 +73,47 @@ pub struct AllowanceIssue {
     pub spender: String,
 }
 
+/// Balance issue from the 0x API: the taker doesn't hold enough of the sell
+/// token. Reported inside a 200 quote/price response (`issues.balance`), not
+/// as an API error — callers must check it explicitly before executing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceIssue {
+    /// Sell token contract address
+    pub token: String,
+    /// Current taker balance in base units
+    pub actual: String,
+    /// Balance required for the swap to execute, in base units
+    pub expected: String,
+}
+
+impl BalanceIssue {
+    /// Convert the quote-reported shortfall into a structured
+    /// `INSUFFICIENT_BALANCE` error (exit 6). Without this pre-flight
+    /// conversion the swap proceeds and dies later as a confusing
+    /// `SIMULATION_FAILED`.
+    pub fn to_error(&self) -> CliError {
+        CliError::Api {
+            code: ErrorCode::InsufficientBalance,
+            message: format!(
+                "Insufficient sell token balance: wallet holds {} but the swap needs {} (token {})",
+                self.actual, self.expected, self.token
+            ),
+            status: None,
+            details: serde_json::to_value(self).ok(),
+            suggestion: Some(
+                "Fund the wallet with more of the sell token or reduce --amount".into(),
+            ),
+        }
+    }
+}
+
 /// Issues reported by the 0x API.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Issues {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowance: Option<AllowanceIssue>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub balance: Option<serde_json::Value>,
+    pub balance: Option<BalanceIssue>,
     #[serde(rename = "simulationIncomplete", default)]
     pub simulation_incomplete: bool,
 }
@@ -290,5 +325,46 @@ mod tests {
         assert_eq!(amount.raw, "1000000");
         assert!(amount.formatted.is_none());
         assert_eq!(amount.display(), "1000000 (raw, decimals unknown)");
+    }
+
+    /// The API's quote-level `issues.balance` shape (`{token, actual,
+    /// expected}`) must keep deserializing — the pre-flight balance check in
+    /// every swap path depends on it.
+    #[test]
+    fn test_issues_balance_deserializes() {
+        let issues: Issues = serde_json::from_str(
+            r#"{
+                "allowance": null,
+                "balance": {
+                    "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                    "actual": "0",
+                    "expected": "1000000"
+                },
+                "simulationIncomplete": false
+            }"#,
+        )
+        .expect("quote issues with balance parse");
+        let balance = issues.balance.expect("balance issue present");
+        assert_eq!(balance.actual, "0");
+        assert_eq!(balance.expected, "1000000");
+    }
+
+    /// The balance issue converts to a structured INSUFFICIENT_BALANCE error
+    /// (exit 6) carrying the shortfall details — not a generic API error.
+    #[test]
+    fn test_balance_issue_to_error() {
+        let issue = BalanceIssue {
+            token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".into(),
+            actual: "0".into(),
+            expected: "1000000".into(),
+        };
+        let err = issue.to_error();
+        assert_eq!(err.code(), ErrorCode::InsufficientBalance);
+        assert_eq!(err.exit_code(), 6);
+        assert!(!err.code().retryable());
+        let details = err.details().expect("details carry the shortfall");
+        assert_eq!(details["actual"], "0");
+        assert_eq!(details["expected"], "1000000");
+        assert!(err.suggestion().is_some());
     }
 }

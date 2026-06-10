@@ -241,17 +241,23 @@ Every command's `--help` ends with a `RESPONSE:` block documenting the `data` pa
 
 ### Bundled Agent Skill
 
-`0x skill print` writes the bundled Claude agent skill (compiled into the binary, always in sync with the running version) to stdout. Pipe it straight into your agent's skill directory:
+The CLI bundles an agent skill (compiled into the binary, always in sync with the running version): one `SKILL.md` entry point plus deep-dive references (gasless, cross-chain, solana, config, tokens, errors) that agents read on demand.
 
 ```bash
-# Claude Code skills directory
-0x skill print > ~/.claude/skills/0x.md
+# Install SKILL.md + references/ into ./.claude/skills/0x-trade/
+0x skill install
 
-# Quick peek
-0x skill print | less
+# Install into a custom skills directory (e.g. user-level)
+0x skill install --dir ~/.claude/skills
+
+# Print the main skill to stdout
+0x skill print
+
+# Print one reference topic
+0x skill print --topic errors
 ```
 
-The skill explains exit codes, output envelope shape, dry-run patterns, and per-chain token references. `-o`/`--output` is ignored — output is always raw markdown.
+The skill explains exit codes, output envelope shape, dry-run patterns, and per-chain token references. `-o`/`--output` is ignored for `skill print` — output is always raw markdown. The canonical source lives in `skills/0x-trade/` in this repo.
 
 ### JSON Envelope
 
@@ -299,14 +305,16 @@ On error:
 |------|---------|-------------|
 | 0 | Success | Proceed |
 | 1 | General error | Inspect `error.code` |
-| 2 | Validation error | Fix parameters |
+| 2 | Input error (malformed args, unsupported chain) | Fix the command |
 | 3 | Config error | Run `0x config init` |
 | 4 | Network error | Retry with backoff |
 | 5 | Auth error | Update API key |
-| 10 | Simulation failed | Do NOT retry |
-| 11 | Transaction reverted | Do NOT retry |
+| 6 | Validation failed (no liquidity, insufficient balance, token not supported) | Fix parameters or fund wallet |
+| 10 | Simulation failed | Inspect the error — may be transient (RPC) or real (revert); one retry ok, never loop |
+| 11 | Transaction reverted | Do NOT retry as-is |
 | 12 | Transaction pending | Poll with `0x status` |
-| 20 | User cancelled | N/A with `--yes` |
+| 20 | User cancelled | Stop; don't re-run |
+| 25 | Preview emitted, confirmation required | Re-run with `--yes` or show the quote |
 | 30 | Dry-run completed | Informational |
 
 ### Error Codes

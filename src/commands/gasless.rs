@@ -122,12 +122,7 @@ pub async fn run_gasless(
         suggestion: Some("Use --chain with an EVM chain like 'base' or 'ethereum'".into()),
     })?;
 
-    let api_key = global
-        .api_key
-        .as_deref()
-        .or(config.api.api_key.as_deref())
-        .ok_or_else(CliError::api_key_missing)?
-        .to_string();
+    let api_key = config::resolve_api_key(global, &config)?;
 
     let signer = crate::wallet::evm::load_evm_signer(&config, global.wallet.as_deref())?;
     let taker = format!("{:?}", signer.address());
@@ -144,6 +139,13 @@ pub async fn run_gasless(
 
     // Populate zid
     metadata.zid = quote.zid.clone();
+
+    // Balance shortfalls arrive inside the 200 quote response
+    // (`issues.balance`), not as an API error — fail with
+    // INSUFFICIENT_BALANCE before asking the user to confirm a doomed trade.
+    if let Some(balance) = quote.issues.as_ref().and_then(|i| i.balance.as_ref()) {
+        return Err(balance.to_error());
+    }
 
     // Resolve token metadata for correct decimals
     let rpc_url =

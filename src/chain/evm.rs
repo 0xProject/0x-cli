@@ -339,7 +339,7 @@ impl EvmExecutor {
                 (
                     format!("Transaction simulation failed: {e}"),
                     Some(
-                        "The transaction would revert. Check token balance, slippage, and parameters."
+                        "Simulation failures can be transient (RPC hiccup, stale gas estimate) or real (balance, slippage, reverting route). Check token balance and parameters; one retry is reasonable, but don't retry in a loop."
                             .into(),
                     ),
                 )

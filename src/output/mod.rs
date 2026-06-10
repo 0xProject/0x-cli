@@ -197,7 +197,7 @@ impl OutputHandler {
         let pb = indicatif::ProgressBar::new_spinner();
         pb.set_style(
             indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg} {elapsed:.dim}")
-                .unwrap()
+                .expect("static spinner template is valid")
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
         pb.set_message(msg.to_string());

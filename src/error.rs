@@ -356,6 +356,43 @@ impl From<&CliError> for ErrorDetail {
     }
 }
 
+/// Every `ErrorCode` variant — the docs-sync tests (error wire names, exit
+/// codes vs. the bundled skill markdown) iterate this. Keep in sync when
+/// adding variants; `as_str_matches_serde_for_every_variant` catches misses
+/// indirectly via the serde round-trip.
+#[cfg(test)]
+pub(crate) const ALL_ERROR_CODES: &[ErrorCode] = &[
+    ErrorCode::ConfigNotFound,
+    ErrorCode::ConfigInvalid,
+    ErrorCode::ApiKeyMissing,
+    ErrorCode::WalletNotFound,
+    ErrorCode::WalletInvalid,
+    ErrorCode::KeyringUnavailable,
+    ErrorCode::InputInvalid,
+    ErrorCode::ChainNotSupported,
+    ErrorCode::InsufficientBalance,
+    ErrorCode::InsufficientAllowance,
+    ErrorCode::NoLiquidity,
+    ErrorCode::TokenNotSupported,
+    ErrorCode::SellAmountTooSmall,
+    ErrorCode::NetworkError,
+    ErrorCode::NetworkTimeout,
+    ErrorCode::RpcError,
+    ErrorCode::ApiRateLimited,
+    ErrorCode::InternalServerError,
+    ErrorCode::ApiError,
+    ErrorCode::ApiAccessDenied,
+    ErrorCode::SigningFailed,
+    ErrorCode::InvalidSignature,
+    ErrorCode::SimulationFailed,
+    ErrorCode::TransactionReverted,
+    ErrorCode::TransactionTimeout,
+    ErrorCode::QuoteExpired,
+    ErrorCode::BridgeFailed,
+    ErrorCode::BridgeTimeout,
+    ErrorCode::UserCancelled,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,38 +403,7 @@ mod tests {
     /// that drift.
     #[test]
     fn as_str_matches_serde_for_every_variant() {
-        let variants = [
-            ErrorCode::ConfigNotFound,
-            ErrorCode::ConfigInvalid,
-            ErrorCode::ApiKeyMissing,
-            ErrorCode::WalletNotFound,
-            ErrorCode::WalletInvalid,
-            ErrorCode::KeyringUnavailable,
-            ErrorCode::InputInvalid,
-            ErrorCode::ChainNotSupported,
-            ErrorCode::InsufficientBalance,
-            ErrorCode::InsufficientAllowance,
-            ErrorCode::NoLiquidity,
-            ErrorCode::TokenNotSupported,
-            ErrorCode::SellAmountTooSmall,
-            ErrorCode::NetworkError,
-            ErrorCode::NetworkTimeout,
-            ErrorCode::RpcError,
-            ErrorCode::ApiRateLimited,
-            ErrorCode::InternalServerError,
-            ErrorCode::ApiError,
-            ErrorCode::ApiAccessDenied,
-            ErrorCode::SigningFailed,
-            ErrorCode::InvalidSignature,
-            ErrorCode::SimulationFailed,
-            ErrorCode::TransactionReverted,
-            ErrorCode::TransactionTimeout,
-            ErrorCode::QuoteExpired,
-            ErrorCode::BridgeFailed,
-            ErrorCode::BridgeTimeout,
-            ErrorCode::UserCancelled,
-        ];
-        for v in variants {
+        for &v in ALL_ERROR_CODES {
             let serde_name = serde_json::to_string(&v).unwrap();
             let serde_name = serde_name.trim_matches('"');
             assert_eq!(v.as_str(), serde_name, "drift on {v:?}");

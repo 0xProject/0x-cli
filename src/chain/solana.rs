@@ -191,7 +191,7 @@ pub async fn execute_solana_swap(
             status: None,
             details: Some(serde_json::json!({ "simulation_logs": log_preview })),
             suggestion: Some(
-                "The transaction would revert. Check token balance, slippage, and the simulation_logs in details.".into(),
+                "Simulation failures can be transient (RPC hiccup, stale blockhash) or real (balance, slippage). Check the simulation_logs in details; one retry is reasonable, but don't retry in a loop.".into(),
             ),
         });
     }

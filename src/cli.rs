@@ -434,6 +434,17 @@ pub enum ConfigAction {
         key: String,
     },
 
+    /// Switch the active profile (or back to the default environment)
+    #[command(after_help = "EXAMPLES:\n\
+        \x20   0x config use stg        # all commands now use profiles.stg\n\
+        \x20   0x config use default    # back to the default (production) environment\n\n\
+        RESPONSE (data field):\n\
+        \x20   active_profile  string?  The now-active profile, or null for default")]
+    Use {
+        /// Profile name, or 'default' to clear the active profile
+        name: String,
+    },
+
     /// Show full configuration (secrets redacted)
     #[command(
         long_about = "Print the active configuration. Wallet secrets are\n\

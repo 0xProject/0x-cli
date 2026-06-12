@@ -58,6 +58,7 @@ async fn run_command(
             } => commands::config_cmd::run_set(key, value, *plaintext, output),
             ConfigAction::Get { key } => commands::config_cmd::run_get(key, output),
             ConfigAction::Unset { key } => commands::config_cmd::run_unset(key, output),
+            ConfigAction::Use { name } => commands::config_cmd::run_use(name, output),
             ConfigAction::Show => commands::config_cmd::run_show(output),
             ConfigAction::Path => commands::config_cmd::run_path(output),
         },

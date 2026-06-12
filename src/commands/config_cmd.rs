@@ -154,6 +154,39 @@ impl HumanDisplay for ConfigUnsetResult {
     }
 }
 
+/// Switch the active profile. `default` clears the override so commands hit
+/// the default `[api]` environment again.
+pub fn run_use(name: &str, output: &OutputHandler) -> Result<i32, CliError> {
+    let mut config = config::load_config_disk_only()?;
+    let active = if name == "default" {
+        config.active_profile = None;
+        None
+    } else {
+        config::set_config_value(&mut config, "active_profile", name, false)?;
+        Some(name.to_string())
+    };
+    config::save_config(&config)?;
+
+    let data = ConfigUseResult {
+        active_profile: active,
+    };
+    Ok(output.emit_success("config use", &data, Metadata::default(), Vec::new(), 0))
+}
+
+#[derive(Serialize)]
+struct ConfigUseResult {
+    active_profile: Option<String>,
+}
+
+impl HumanDisplay for ConfigUseResult {
+    fn display_human(&self, writer: &mut dyn Write, _color: bool) -> io::Result<()> {
+        match &self.active_profile {
+            Some(n) => writeln!(writer, "Active profile: {n}"),
+            None => writeln!(writer, "Using default environment"),
+        }
+    }
+}
+
 /// Interactive config wizard. When `browser` is true, opens
 /// `https://dashboard.0x.org` in the OS default browser so the user can
 /// grab an API key without leaving the terminal (copy/paste — no OAuth

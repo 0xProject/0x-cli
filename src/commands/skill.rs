@@ -163,8 +163,7 @@ mod tests {
             })
             .collect();
 
-        let mut expected: BTreeSet<i32> =
-            ALL_ERROR_CODES.iter().map(|c| c.exit_code()).collect();
+        let mut expected: BTreeSet<i32> = ALL_ERROR_CODES.iter().map(|c| c.exit_code()).collect();
         expected.insert(0); // success
         expected.insert(25); // preview emitted (confirm_or_preview)
         expected.insert(30); // dry-run completed
@@ -202,11 +201,7 @@ mod tests {
 
             // Backticked tokens in the first cell are wire names; rows may
             // combine several codes that share a category/exit/retryable.
-            let names: Vec<&str> = codes_cell
-                .split('`')
-                .skip(1)
-                .step_by(2)
-                .collect();
+            let names: Vec<&str> = codes_cell.split('`').skip(1).step_by(2).collect();
             // Header row (`| \`error.code\` | Category | Exit | ...`) has no
             // numeric exit cell — skip it. The coverage assertion below
             // guarantees we still processed every real row.

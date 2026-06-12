@@ -164,12 +164,13 @@ impl ApiClient {
         slippage_bps: Option<u32>,
         sort_by: Option<&str>,
         max_quotes: Option<u8>,
+        solana_ephemeral_signer_pubkey: Option<&str>,
     ) -> Result<CrossChainQuotesResponse, CliError> {
         let slippage_str = slippage_bps.unwrap_or(100).to_string();
         let max_quotes_str = max_quotes.unwrap_or(3).to_string();
         let sort = sort_by.unwrap_or("price");
 
-        let params: Vec<(&str, &str)> = vec![
+        let mut params: Vec<(&str, &str)> = vec![
             ("originChain", origin_chain),
             ("destinationChain", destination_chain),
             ("sellToken", sell_token),
@@ -181,6 +182,12 @@ impl ApiClient {
             ("sortQuotesBy", sort),
             ("maxNumQuotes", &max_quotes_str),
         ];
+        // Unlocks Solana-origin routes that need a one-shot extra signer
+        // (e.g. CCTP's event account); the holder of the keypair must
+        // co-sign the returned transaction.
+        if let Some(pubkey) = solana_ephemeral_signer_pubkey {
+            params.push(("solanaEphemeralSignerPubkey", pubkey));
+        }
 
         self.get("/cross-chain/quotes", &params).await
     }

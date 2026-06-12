@@ -254,7 +254,7 @@ pub enum SolanaSwapResult {
 /// Sign a pre-serialized transaction (for cross-chain Solana origin).
 pub fn sign_preserialized_transaction(
     base64_tx: &str,
-    keypair: &Keypair,
+    signers: &[&Keypair],
 ) -> Result<VersionedTransaction, CliError> {
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_tx)
         .map_err(|e| CliError::Transaction {
@@ -272,11 +272,6 @@ pub fn sign_preserialized_transaction(
             suggestion: None,
         })?;
 
-    // Sign the message
-    let msg_bytes = tx.message.serialize();
-    let signature = keypair.sign_message(&msg_bytes);
-
-    // Replace the first signature (fee payer)
     if tx.signatures.is_empty() {
         return Err(CliError::Transaction {
             code: ErrorCode::SigningFailed,
@@ -285,7 +280,86 @@ pub fn sign_preserialized_transaction(
             suggestion: None,
         });
     }
-    tx.signatures[0] = signature;
+
+    // Each required-signer slot maps to the same-index static account key.
+    // Sign every slot we hold a keypair for; any slot left unsigned is an
+    // error (the network would reject the transaction anyway).
+    let msg_bytes = tx.message.serialize();
+    let signer_keys: Vec<Pubkey> = tx
+        .message
+        .static_account_keys()
+        .iter()
+        .take(tx.signatures.len())
+        .copied()
+        .collect();
+    for (slot, key) in signer_keys.iter().enumerate() {
+        let Some(signer) = signers.iter().find(|kp| kp.pubkey() == *key) else {
+            return Err(CliError::Transaction {
+                code: ErrorCode::SigningFailed,
+                message: format!("No keypair available for required signer {key}"),
+                tx_hash: None,
+                suggestion: None,
+            });
+        };
+        tx.signatures[slot] = signer.sign_message(&msg_bytes);
+    }
 
     Ok(tx)
+}
+
+#[cfg(test)]
+mod sign_tests {
+    use super::*;
+    use solana_sdk::hash::Hash;
+    use solana_sdk::message::v0::Message;
+    use solana_sdk::signature::Signature;
+    use solana_sdk::signer::Signer;
+
+    fn two_signer_tx_base64(payer: &Keypair, extra: &Keypair) -> String {
+        let ix = Instruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![
+                AccountMeta::new(payer.pubkey(), true),
+                AccountMeta::new(extra.pubkey(), true),
+            ],
+            data: vec![1, 2, 3],
+        };
+        let msg = Message::try_compile(&payer.pubkey(), &[ix], &[], Hash::new_unique()).unwrap();
+        let n = msg.header.num_required_signatures as usize;
+        let tx = VersionedTransaction {
+            signatures: vec![Signature::default(); n],
+            message: VersionedMessage::V0(msg),
+        };
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            bincode::serialize(&tx).unwrap(),
+        )
+    }
+
+    #[test]
+    fn signs_all_required_slots_with_matching_keypairs() {
+        let payer = Keypair::new();
+        let extra = Keypair::new();
+        let b64 = two_signer_tx_base64(&payer, &extra);
+
+        let tx = sign_preserialized_transaction(&b64, &[&payer, &extra]).unwrap();
+
+        assert_eq!(tx.signatures.len(), 2);
+        let msg_bytes = tx.message.serialize();
+        let keys = tx.message.static_account_keys();
+        for (slot, sig) in tx.signatures.iter().enumerate() {
+            assert_ne!(*sig, Signature::default());
+            assert!(sig.verify(keys[slot].as_ref(), &msg_bytes));
+        }
+    }
+
+    #[test]
+    fn errors_when_a_required_signer_is_missing() {
+        let payer = Keypair::new();
+        let extra = Keypair::new();
+        let b64 = two_signer_tx_base64(&payer, &extra);
+
+        let err = sign_preserialized_transaction(&b64, &[&payer]).unwrap_err();
+        assert!(err.to_string().contains(&extra.pubkey().to_string()));
+    }
 }

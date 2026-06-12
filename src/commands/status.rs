@@ -114,9 +114,7 @@ pub async fn run(
 ) -> Result<i32, CliError> {
     let config = config::load_config()?;
 
-    let api_key = config::resolve_api_key(global, &config)?;
-
-    let client = ApiClient::new(api_key, global.timeout)?;
+    let client = crate::api::client_for(global, &config, output)?;
 
     // Auto-detect status type if not specified
     let status_type = args.r#type.unwrap_or_else(|| {

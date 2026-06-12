@@ -52,22 +52,6 @@ impl ResolvedRpc {
     }
 }
 
-/// Resolve the 0x API key: `--api-key` flag first, then the config view
-/// (which already has `ZEROX_API_KEY` overlaid by [`load_config`]). Errors
-/// with the structured `API_KEY_MISSING` when neither is set — every command
-/// needs this exact chain, so it lives here instead of being copy-pasted.
-pub fn resolve_api_key(
-    global: &crate::GlobalOpts,
-    config: &AppConfig,
-) -> Result<String, CliError> {
-    global
-        .api_key
-        .as_deref()
-        .or(config.api.api_key.as_deref())
-        .map(str::to_string)
-        .ok_or_else(CliError::api_key_missing)
-}
-
 /// A fully resolved API environment: which profile (if any) is active, the
 /// base URL to hit, and the API key to send.
 #[derive(Debug, Clone)]
@@ -118,7 +102,8 @@ pub fn resolve_env(
         .ok_or_else(CliError::api_key_missing)?;
 
     let base_url = profile
-        .and_then(|p| p.base_url.clone())
+        .and_then(|p| p.base_url.as_deref())
+        .map(|url| url.trim_end_matches('/').to_string())
         .unwrap_or_else(|| crate::api::BASE_URL.to_string());
 
     Ok(ResolvedEnv {
@@ -738,6 +723,18 @@ mod tests {
         // 7. No key anywhere errors.
         config.api.api_key = None;
         assert!(resolve_env(&global_with(Some("keyless"), None), &config).is_err());
+
+        // 8. A hand-edited trailing slash is normalized at resolution time.
+        config.api.api_key = Some("prod-key".to_string());
+        config.profiles.insert(
+            "slashy".to_string(),
+            types::Profile {
+                base_url: Some("https://staging.example.com/".to_string()),
+                api_key: None,
+            },
+        );
+        let env = resolve_env(&global_with(Some("slashy"), None), &config).unwrap();
+        assert_eq!(env.base_url, "https://staging.example.com");
     }
 
     #[test]

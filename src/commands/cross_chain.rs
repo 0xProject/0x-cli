@@ -1,6 +1,5 @@
 use crate::api::cross_chain::{CrossChainQuote, CrossChainQuotesResponse};
 use crate::api::types::{compute_rate, RouteSource, TokenAmount, TokenInfo};
-use crate::api::ApiClient;
 use crate::chain;
 use crate::cli::{CrossChainArgs, QuoteSort};
 use crate::config;
@@ -373,8 +372,6 @@ pub async fn run(
     chain::validate_token_address(&args.buy, destination)?;
     chain::validate_base_unit_amount(&args.amount)?;
 
-    let api_key = config::resolve_api_key(global, &config)?;
-
     // Load the origin wallet once. We need its address up-front for the
     // quote request and the same wallet later for approval / signing —
     // re-loading on every call would re-hit the OS keyring (and prompt the
@@ -390,7 +387,7 @@ pub async fn run(
         resolve_destination_address(&origin_wallet, origin, destination, &config)?;
 
     let mut metadata = Metadata::for_chain(origin);
-    let client = ApiClient::new(api_key, global.timeout)?;
+    let client = crate::api::client_for(global, &config, output)?;
 
     let sort_by = match args.sort {
         QuoteSort::Price => "price",

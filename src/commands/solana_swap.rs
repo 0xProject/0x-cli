@@ -1,4 +1,3 @@
-use crate::api::ApiClient;
 use crate::chain;
 use crate::cli::{ApprovalStrategy, SwapArgs};
 use crate::config;
@@ -77,8 +76,6 @@ pub async fn run(
         });
     }
 
-    let api_key = config::resolve_api_key(global, config)?;
-
     let keypair = crate::wallet::solana::load_solana_keypair(config, global.wallet.as_deref())?;
     let taker = crate::wallet::solana::pubkey_string(&keypair);
 
@@ -99,7 +96,7 @@ pub async fn run(
         });
     }
 
-    let client = ApiClient::new(api_key, global.timeout)?;
+    let client = crate::api::client_for(global, config, output)?;
 
     chain::validate_base_unit_amount(&args.amount)?;
     let amount_in: u64 = args.amount.parse().map_err(|_| CliError::Api {

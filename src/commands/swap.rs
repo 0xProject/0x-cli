@@ -1,6 +1,5 @@
 use crate::api::evm_swap::QuoteResponse;
 use crate::api::types::{compute_rate, RouteSource, TokenAmount, TokenInfo};
-use crate::api::ApiClient;
 use crate::chain;
 use crate::chain::evm::{EvmExecutor, SwapResult};
 use crate::cli::SwapArgs;
@@ -208,13 +207,11 @@ async fn run_evm_swap(
 ) -> Result<i32, CliError> {
     let chain_id = chain_info.evm_chain_id()?;
 
-    let api_key = config::resolve_api_key(global, config)?;
-
     let signer = crate::wallet::evm::load_evm_signer(config, global.wallet.as_deref())?;
     let taker_address = format!("{:?}", signer.address());
 
     let mut metadata = Metadata::for_chain(chain_info);
-    let client = ApiClient::new(api_key, global.timeout)?;
+    let client = crate::api::client_for(global, config, output)?;
 
     // Step 1: Get quote. Spinner is cleared automatically on Drop, so a `?`
     // early-return from the API call doesn't leak tick characters.

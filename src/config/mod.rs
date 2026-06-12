@@ -558,6 +558,7 @@ pub fn unset_config_value(config: &mut AppConfig, key: &str) -> Result<bool, Cli
                         }
                         if profile.base_url.is_none() && profile.api_key.is_none() {
                             config.profiles.remove(name);
+                            changed = true;
                             if config.active_profile.as_deref() == Some(name) {
                                 config.active_profile = None;
                             }
@@ -915,5 +916,14 @@ mod tests {
         // Unsetting something that isn't set reports no change.
         assert!(!unset_config_value(&mut config, "profiles.stg.api_key").unwrap());
         assert!(!unset_config_value(&mut config, "active_profile").unwrap());
+
+        // A hand-edited empty profile still counts as a change when pruned.
+        config
+            .profiles
+            .insert("empty".to_string(), types::Profile::default());
+        config.active_profile = Some("empty".to_string());
+        assert!(unset_config_value(&mut config, "profiles.empty.api_key").unwrap());
+        assert!(config.profiles.is_empty());
+        assert!(config.active_profile.is_none());
     }
 }

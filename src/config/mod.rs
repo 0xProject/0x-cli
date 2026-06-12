@@ -411,7 +411,12 @@ pub fn set_config_value(
                 let available = if config.profiles.is_empty() {
                     "none defined".to_string()
                 } else {
-                    config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+                    config
+                        .profiles
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 };
                 return Err(CliError::Config {
                     code: ErrorCode::ConfigNotFound,
@@ -436,8 +441,11 @@ pub fn set_config_value(
                             ),
                         });
                     }
-                    config.profiles.entry(name.to_string()).or_default().base_url =
-                        Some(value.trim_end_matches('/').to_string());
+                    config
+                        .profiles
+                        .entry(name.to_string())
+                        .or_default()
+                        .base_url = Some(value.trim_end_matches('/').to_string());
                 }
                 "api_key" => {
                     config.profiles.entry(name.to_string()).or_default().api_key =
@@ -694,7 +702,9 @@ mod tests {
         // 3. active_profile from config applies when no flag is passed,
         //    and the --profile flag wins over it.
         config.active_profile = Some("other".to_string());
-        config.profiles.insert("other".to_string(), types::Profile::default());
+        config
+            .profiles
+            .insert("other".to_string(), types::Profile::default());
         let env = resolve_env(&global_with(None, None), &config).unwrap();
         assert_eq!(env.profile.as_deref(), Some("other"));
         let env = resolve_env(&global_with(Some("stg"), None), &config).unwrap();
@@ -709,10 +719,13 @@ mod tests {
 
         // 5. Profile without its own key falls back to the default key;
         //    profile without a base_url falls back to BASE_URL.
-        config.profiles.insert("keyless".to_string(), types::Profile {
-            base_url: None,
-            api_key: None,
-        });
+        config.profiles.insert(
+            "keyless".to_string(),
+            types::Profile {
+                base_url: None,
+                api_key: None,
+            },
+        );
         let env = resolve_env(&global_with(Some("keyless"), None), &config).unwrap();
         assert_eq!(env.api_key, "prod-key");
         assert_eq!(env.base_url, crate::api::BASE_URL);
@@ -886,14 +899,18 @@ mod tests {
         assert_eq!(get_config_value(&config, "active_profile").unwrap(), "stg");
 
         // Invalid inputs.
-        assert!(set_config_value(&mut config, "profiles.stg.base_url", "not-a-url", false).is_err());
+        assert!(
+            set_config_value(&mut config, "profiles.stg.base_url", "not-a-url", false).is_err()
+        );
         assert!(set_config_value(&mut config, "profiles.bad name.api_key", "x", false).is_err());
         assert!(set_config_value(&mut config, "profiles.default.api_key", "x", false).is_err());
         assert!(set_config_value(&mut config, "profiles.stg.unknown", "x", false).is_err());
         assert!(set_config_value(&mut config, "profiles.stg", "x", false).is_err());
 
         // A failed set on a fresh name must not leave a phantom profile.
-        assert!(set_config_value(&mut config, "profiles.fresh.base_url", "not-a-url", false).is_err());
+        assert!(
+            set_config_value(&mut config, "profiles.fresh.base_url", "not-a-url", false).is_err()
+        );
         assert!(set_config_value(&mut config, "profiles.fresh.unknown", "x", false).is_err());
         assert!(!config.profiles.contains_key("fresh"));
 

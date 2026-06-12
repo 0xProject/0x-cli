@@ -122,13 +122,11 @@ pub async fn run_gasless(
         suggestion: Some("Use --chain with an EVM chain like 'base' or 'ethereum'".into()),
     })?;
 
-    let api_key = config::resolve_api_key(global, &config)?;
-
     let signer = crate::wallet::evm::load_evm_signer(&config, global.wallet.as_deref())?;
     let taker = format!("{:?}", signer.address());
 
     let mut metadata = Metadata::for_chain(chain_info);
-    let client = ApiClient::new(api_key, global.timeout)?;
+    let client = crate::api::client_for(global, &config, output)?;
 
     // Step 1: Get gasless quote
     let spinner = output.spinner_guard("Fetching gasless quote...");

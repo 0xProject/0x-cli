@@ -4,6 +4,11 @@ use std::collections::HashMap;
 /// Top-level CLI configuration stored in ~/.0x-config/config.toml
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
+    /// Profile applied when `--profile` isn't passed. Declared before the
+    /// table fields — TOML requires plain values to precede tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<String>,
+
     #[serde(default)]
     pub api: ApiConfig,
 
@@ -16,11 +21,25 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub wallet: WalletConfig,
+
+    /// Named environment overrides; unset fields fall back to the default
+    /// `[api]` section at resolution time.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub profiles: HashMap<String, Profile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ApiConfig {
     /// 0x API key
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Profile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
 }
@@ -89,6 +108,12 @@ impl AppConfig {
             None => None,
         };
 
+        for profile in copy.profiles.values_mut() {
+            if let Some(key) = profile.api_key.as_deref() {
+                profile.api_key = Some(redact_string(key));
+            }
+        }
+
         copy
     }
 }
@@ -151,6 +176,7 @@ mod tests {
     #[test]
     fn test_roundtrip_toml() {
         let config = AppConfig {
+            active_profile: None,
             api: ApiConfig {
                 api_key: Some("test-key".to_string()),
             },
@@ -168,6 +194,7 @@ mod tests {
                 evm: Some("0xdeadbeef".to_string()),
                 solana: None,
             },
+            profiles: HashMap::new(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -177,5 +204,33 @@ mod tests {
         assert_eq!(parsed.defaults.chain, config.defaults.chain);
         assert_eq!(parsed.defaults.slippage_bps, config.defaults.slippage_bps);
         assert_eq!(parsed.rpc.get("base"), config.rpc.get("base"));
+    }
+
+    #[test]
+    fn test_profiles_roundtrip_and_redaction() {
+        let mut config = AppConfig::default();
+        config.api.api_key = Some("prod-key-12345678".to_string());
+        config.active_profile = Some("stg".to_string());
+        config.profiles.insert(
+            "stg".to_string(),
+            Profile {
+                base_url: Some("https://staging.example.com".to_string()),
+                api_key: Some("stg-key-12345678".to_string()),
+            },
+        );
+
+        // active_profile is a plain value and must serialize before the table
+        // fields — to_string_pretty errors if struct order puts it after them.
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.active_profile.as_deref(), Some("stg"));
+        let stg = parsed.profiles.get("stg").unwrap();
+        assert_eq!(stg.base_url.as_deref(), Some("https://staging.example.com"));
+        assert_eq!(stg.api_key.as_deref(), Some("stg-key-12345678"));
+
+        let redacted = config.redacted();
+        let stg = redacted.profiles.get("stg").unwrap();
+        assert_eq!(stg.api_key.as_deref(), Some("stg-...5678"));
+        assert_eq!(stg.base_url.as_deref(), Some("https://staging.example.com"));
     }
 }

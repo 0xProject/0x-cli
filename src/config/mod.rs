@@ -52,17 +52,65 @@ impl ResolvedRpc {
     }
 }
 
-/// Resolve the 0x API key: `--api-key` flag first, then the config view
-/// (which already has `ZEROX_API_KEY` overlaid by [`load_config`]). Errors
-/// with the structured `API_KEY_MISSING` when neither is set — every command
-/// needs this exact chain, so it lives here instead of being copy-pasted.
-pub fn resolve_api_key(global: &crate::GlobalOpts, config: &AppConfig) -> Result<String, CliError> {
-    global
+/// A fully resolved API environment: which profile (if any) is active, the
+/// base URL to hit, and the API key to send.
+#[derive(Debug, Clone)]
+pub struct ResolvedEnv {
+    /// Active profile name; `None` means the default `[api]` section.
+    pub profile: Option<String>,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+/// Resolve the API environment: `--profile` / `ZEROX_PROFILE` first, then
+/// `active_profile` from the config file, then the default `[api]` section.
+/// Within a profile, unset fields fall back to the default section, so a
+/// profile may override just the key or just the URL. The `--api-key` flag
+/// (and `ZEROX_API_KEY`, which clap feeds into it) wins over both.
+pub fn resolve_env(
+    global: &crate::GlobalOpts,
+    config: &AppConfig,
+) -> Result<ResolvedEnv, CliError> {
+    let name = global
+        .profile
+        .as_deref()
+        .or(config.active_profile.as_deref());
+
+    let profile = match name {
+        Some(n) => Some(config.profiles.get(n).ok_or_else(|| {
+            let available = if config.profiles.is_empty() {
+                "none defined".to_string()
+            } else {
+                config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+            };
+            CliError::Config {
+                code: ErrorCode::ConfigNotFound,
+                message: format!(
+                    "Profile '{n}' is not defined (available: {available}). Define it with: 0x config set profiles.{n}.base_url <url>"
+                ),
+            }
+        })?),
+        None => None,
+    };
+
+    let api_key = global
         .api_key
         .as_deref()
+        .or_else(|| profile.and_then(|p| p.api_key.as_deref()))
         .or(config.api.api_key.as_deref())
         .map(str::to_string)
-        .ok_or_else(CliError::api_key_missing)
+        .ok_or_else(CliError::api_key_missing)?;
+
+    let base_url = profile
+        .and_then(|p| p.base_url.as_deref())
+        .map(|url| url.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| crate::api::BASE_URL.to_string());
+
+    Ok(ResolvedEnv {
+        profile: name.map(str::to_string),
+        base_url,
+        api_key,
+    })
 }
 
 /// Resolve an RPC URL, preferring `override_url` (CLI flag / env var), then
@@ -250,6 +298,36 @@ pub enum SecretStorage {
     Config,
 }
 
+/// Profile names become TOML table keys and CLI arguments — keep them to a
+/// safe charset. `default` is reserved for `0x config use default`.
+fn validate_profile_name(name: &str) -> Result<(), CliError> {
+    if name.is_empty()
+        || name == "default"
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(CliError::Config {
+            code: ErrorCode::InputInvalid,
+            message: format!(
+                "Invalid profile name '{name}'. Use letters, digits, '-' or '_' ('default' is reserved)."
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Split `profiles.<name>.<field>` into (name, field).
+fn parse_profile_key(key: &str) -> Result<(&str, &str), CliError> {
+    let rest = key.strip_prefix("profiles.").unwrap();
+    rest.split_once('.').ok_or_else(|| CliError::Config {
+        code: ErrorCode::InputInvalid,
+        message: format!(
+            "Profile keys are 'profiles.<name>.base_url' or 'profiles.<name>.api_key'; got '{key}'"
+        ),
+    })
+}
+
 /// Set a config value by dot-notation key. Wallet secrets are written to the
 /// OS keyring by default; pass `plaintext = true` to write them into the
 /// config file. The flag has no effect on non-secret keys. Returns where any
@@ -328,6 +406,62 @@ pub fn set_config_value(
                 )
             }
         }
+        "active_profile" => {
+            if !config.profiles.contains_key(value) {
+                let available = if config.profiles.is_empty() {
+                    "none defined".to_string()
+                } else {
+                    config
+                        .profiles
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                return Err(CliError::Config {
+                    code: ErrorCode::ConfigNotFound,
+                    message: format!(
+                        "Profile '{value}' is not defined (available: {available}). Define it first: 0x config set profiles.{value}.base_url <url>"
+                    ),
+                });
+            }
+            config.active_profile = Some(value.to_string());
+            Ok(SecretStorage::Config)
+        }
+        key if key.starts_with("profiles.") => {
+            let (name, field) = parse_profile_key(key)?;
+            validate_profile_name(name)?;
+            match field {
+                "base_url" => {
+                    if !value.starts_with("https://") && !value.starts_with("http://") {
+                        return Err(CliError::Config {
+                            code: ErrorCode::InputInvalid,
+                            message: format!(
+                                "Profile base_url must start with http(s)://; got '{value}'"
+                            ),
+                        });
+                    }
+                    config
+                        .profiles
+                        .entry(name.to_string())
+                        .or_default()
+                        .base_url = Some(value.trim_end_matches('/').to_string());
+                }
+                "api_key" => {
+                    config.profiles.entry(name.to_string()).or_default().api_key =
+                        Some(value.to_string());
+                }
+                _ => {
+                    return Err(CliError::Config {
+                        code: ErrorCode::InputInvalid,
+                        message: format!(
+                            "Unknown profile field '{field}'. Valid: base_url, api_key"
+                        ),
+                    });
+                }
+            }
+            Ok(SecretStorage::Config)
+        }
         key if key.starts_with("rpc.") => {
             let chain = key.strip_prefix("rpc.").unwrap();
             config.rpc.insert(chain.to_string(), value.to_string());
@@ -389,6 +523,43 @@ pub fn unset_config_value(config: &mut AppConfig, key: &str) -> Result<bool, Cli
             changed |= config.wallet.solana.take().is_some();
             changed |= unset_keyring(crate::wallet::keyring_store::keys::WALLET_SOLANA);
         }
+        "active_profile" => changed = config.active_profile.take().is_some(),
+        key if key.starts_with("profiles.") => {
+            let rest = key.strip_prefix("profiles.").unwrap();
+            match rest.split_once('.') {
+                // Whole profile: `0x config unset profiles.stg`
+                None => {
+                    changed = config.profiles.remove(rest).is_some();
+                    if config.active_profile.as_deref() == Some(rest) {
+                        config.active_profile = None;
+                        changed = true;
+                    }
+                }
+                Some((name, field)) => {
+                    if let Some(profile) = config.profiles.get_mut(name) {
+                        match field {
+                            "base_url" => changed = profile.base_url.take().is_some(),
+                            "api_key" => changed = profile.api_key.take().is_some(),
+                            _ => {
+                                return Err(CliError::Config {
+                                    code: ErrorCode::InputInvalid,
+                                    message: format!(
+                                        "Unknown profile field '{field}'. Valid: base_url, api_key"
+                                    ),
+                                });
+                            }
+                        }
+                        if profile.base_url.is_none() && profile.api_key.is_none() {
+                            config.profiles.remove(name);
+                            changed = true;
+                            if config.active_profile.as_deref() == Some(name) {
+                                config.active_profile = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         key if key.starts_with("rpc.") => {
             let chain = key.strip_prefix("rpc.").unwrap();
             changed = config.rpc.remove(chain).is_some();
@@ -430,6 +601,23 @@ pub fn get_config_value(config: &AppConfig, key: &str) -> Result<String, CliErro
             }
             None => None,
         },
+        "active_profile" => config.active_profile.clone(),
+        key if key.starts_with("profiles.") => {
+            let (name, field) = parse_profile_key(key)?;
+            let profile = config.profiles.get(name);
+            match field {
+                "base_url" => profile.and_then(|p| p.base_url.clone()),
+                "api_key" => profile.and_then(|p| p.api_key.clone()),
+                _ => {
+                    return Err(CliError::Config {
+                        code: ErrorCode::InputInvalid,
+                        message: format!(
+                            "Unknown profile field '{field}'. Valid: base_url, api_key"
+                        ),
+                    });
+                }
+            }
+        }
         key if key.starts_with("rpc.") => {
             let chain = key.strip_prefix("rpc.").unwrap();
             config.rpc.get(chain).cloned()
@@ -472,6 +660,94 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::env::set_var("HOME", tmp.path());
         f();
+    }
+
+    fn global_with(profile: Option<&str>, api_key: Option<&str>) -> crate::GlobalOpts {
+        crate::GlobalOpts {
+            api_key: api_key.map(str::to_string),
+            wallet: None,
+            rpc_url: None,
+            timeout: 30,
+            yes: false,
+            dry_run: false,
+            verbose: false,
+            profile: profile.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_resolve_env_precedence() {
+        let mut config = AppConfig::default();
+        config.api.api_key = Some("prod-key".to_string());
+        config.profiles.insert(
+            "stg".to_string(),
+            types::Profile {
+                base_url: Some("https://staging.example.com".to_string()),
+                api_key: Some("stg-key".to_string()),
+            },
+        );
+
+        // 1. No profile anywhere → default env.
+        let env = resolve_env(&global_with(None, None), &config).unwrap();
+        assert!(env.profile.is_none());
+        assert_eq!(env.base_url, crate::api::BASE_URL);
+        assert_eq!(env.api_key, "prod-key");
+
+        // 2. --profile flag selects the profile.
+        let env = resolve_env(&global_with(Some("stg"), None), &config).unwrap();
+        assert_eq!(env.profile.as_deref(), Some("stg"));
+        assert_eq!(env.base_url, "https://staging.example.com");
+        assert_eq!(env.api_key, "stg-key");
+
+        // 3. active_profile from config applies when no flag is passed,
+        //    and the --profile flag wins over it.
+        config.active_profile = Some("other".to_string());
+        config
+            .profiles
+            .insert("other".to_string(), types::Profile::default());
+        let env = resolve_env(&global_with(None, None), &config).unwrap();
+        assert_eq!(env.profile.as_deref(), Some("other"));
+        let env = resolve_env(&global_with(Some("stg"), None), &config).unwrap();
+        assert_eq!(env.profile.as_deref(), Some("stg"));
+        assert_eq!(env.base_url, "https://staging.example.com");
+        config.active_profile = None;
+        config.profiles.remove("other");
+
+        // 4. --api-key / ZEROX_API_KEY beats the profile's key.
+        let env = resolve_env(&global_with(Some("stg"), Some("flag-key")), &config).unwrap();
+        assert_eq!(env.api_key, "flag-key");
+
+        // 5. Profile without its own key falls back to the default key;
+        //    profile without a base_url falls back to BASE_URL.
+        config.profiles.insert(
+            "keyless".to_string(),
+            types::Profile {
+                base_url: None,
+                api_key: None,
+            },
+        );
+        let env = resolve_env(&global_with(Some("keyless"), None), &config).unwrap();
+        assert_eq!(env.api_key, "prod-key");
+        assert_eq!(env.base_url, crate::api::BASE_URL);
+
+        // 6. Unknown profile errors.
+        assert!(resolve_env(&global_with(Some("nope"), None), &config).is_err());
+
+        // 7. No key anywhere errors.
+        config.api.api_key = None;
+        assert!(resolve_env(&global_with(Some("keyless"), None), &config).is_err());
+
+        // 8. A hand-edited trailing slash is normalized at resolution time.
+        config.api.api_key = Some("prod-key".to_string());
+        config.profiles.insert(
+            "slashy".to_string(),
+            types::Profile {
+                base_url: Some("https://staging.example.com/".to_string()),
+                api_key: None,
+            },
+        );
+        let env = resolve_env(&global_with(Some("slashy"), None), &config).unwrap();
+        assert_eq!(env.base_url, "https://staging.example.com");
     }
 
     #[test]
@@ -588,5 +864,80 @@ mod tests {
         .unwrap();
         assert!(matches!(storage, SecretStorage::Config));
         assert!(config.wallet.evm.is_some());
+    }
+
+    #[test]
+    fn test_profile_config_keys() {
+        let mut config = AppConfig::default();
+
+        // Trailing slash is trimmed so URL joins don't produce `//`.
+        set_config_value(
+            &mut config,
+            "profiles.stg.base_url",
+            "https://staging.example.com/",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            config.profiles.get("stg").unwrap().base_url.as_deref(),
+            Some("https://staging.example.com")
+        );
+
+        set_config_value(&mut config, "profiles.stg.api_key", "stg-key", false).unwrap();
+        assert_eq!(
+            get_config_value(&config, "profiles.stg.api_key").unwrap(),
+            "stg-key"
+        );
+        assert_eq!(
+            get_config_value(&config, "profiles.stg.base_url").unwrap(),
+            "https://staging.example.com"
+        );
+
+        // active_profile only accepts profiles that exist.
+        assert!(set_config_value(&mut config, "active_profile", "nope", false).is_err());
+        set_config_value(&mut config, "active_profile", "stg", false).unwrap();
+        assert_eq!(get_config_value(&config, "active_profile").unwrap(), "stg");
+
+        // Invalid inputs.
+        assert!(
+            set_config_value(&mut config, "profiles.stg.base_url", "not-a-url", false).is_err()
+        );
+        assert!(set_config_value(&mut config, "profiles.bad name.api_key", "x", false).is_err());
+        assert!(set_config_value(&mut config, "profiles.default.api_key", "x", false).is_err());
+        assert!(set_config_value(&mut config, "profiles.stg.unknown", "x", false).is_err());
+        assert!(set_config_value(&mut config, "profiles.stg", "x", false).is_err());
+
+        // A failed set on a fresh name must not leave a phantom profile.
+        assert!(
+            set_config_value(&mut config, "profiles.fresh.base_url", "not-a-url", false).is_err()
+        );
+        assert!(set_config_value(&mut config, "profiles.fresh.unknown", "x", false).is_err());
+        assert!(!config.profiles.contains_key("fresh"));
+
+        // Unsetting the whole profile also clears a pointing active_profile.
+        assert!(unset_config_value(&mut config, "profiles.stg").unwrap());
+        assert!(config.profiles.is_empty());
+        assert!(config.active_profile.is_none());
+    }
+
+    #[test]
+    fn test_unset_profile_field_removes_empty_profile() {
+        let mut config = AppConfig::default();
+        set_config_value(&mut config, "profiles.stg.api_key", "k", false).unwrap();
+        assert!(unset_config_value(&mut config, "profiles.stg.api_key").unwrap());
+        assert!(config.profiles.is_empty());
+
+        // Unsetting something that isn't set reports no change.
+        assert!(!unset_config_value(&mut config, "profiles.stg.api_key").unwrap());
+        assert!(!unset_config_value(&mut config, "active_profile").unwrap());
+
+        // A hand-edited empty profile still counts as a change when pruned.
+        config
+            .profiles
+            .insert("empty".to_string(), types::Profile::default());
+        config.active_profile = Some("empty".to_string());
+        assert!(unset_config_value(&mut config, "profiles.empty.api_key").unwrap());
+        assert!(config.profiles.is_empty());
+        assert!(config.active_profile.is_none());
     }
 }

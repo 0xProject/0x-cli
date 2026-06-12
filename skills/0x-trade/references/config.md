@@ -29,6 +29,9 @@ Non-interactive (agent-driven) setup:
 | `rpc.<chain>` | Custom RPC URL per chain, e.g. `rpc.base` |
 | `wallet.evm` | EVM private key (hex) — secret → keyring |
 | `wallet.solana` | Keypair file path (→ config) or base58/JSON-array secret (→ keyring) |
+| `active_profile` | Profile applied when --profile isn't passed |
+| `profiles.<name>.base_url` | Override the API base URL for a profile |
+| `profiles.<name>.api_key` | API key for a profile |
 
 - `--plaintext` on `config set` stores a wallet secret in the config file instead of the keyring (for headless Linux without a keyring daemon).
 - `0x config show` redacts secrets; keyring entries read back as `<stored in keyring>`.
@@ -45,6 +48,7 @@ Non-interactive (agent-driven) setup:
 | `ZEROX_DEFAULT_CHAIN` | `defaults.chain` |
 | `ZEROX_RPC_URL` | RPC for the current command |
 | `ZEROX_OUTPUT` | `-o/--output` format |
+| `ZEROX_PROFILE` | Config profile to use (overrides active_profile) |
 | `NO_COLOR` | Disables colored output |
 
 Precedence everywhere: CLI flag > environment variable > config file > built-in default.
@@ -52,3 +56,21 @@ Precedence everywhere: CLI flag > environment variable > config file > built-in 
 ## RPC notes
 
 Each chain ships a built-in public RPC fallback. Public endpoints throttle; if a swap fails with rate-limit or timeout errors, the error suggestion will say so — configure a private RPC with `0x config set rpc.<chain> <url>` or pass `--rpc-url`.
+
+## Profiles
+
+Named API environments stored in the config file. Each profile may override
+`base_url`, `api_key`, or both; unset fields fall back to the default `[api]`
+section.
+
+```bash
+0x config set profiles.stg.base_url <staging-url>
+0x config set profiles.stg.api_key <staging-key>
+0x config use stg          # sticky: all commands use the profile
+0x --profile stg price ... # one-off
+0x config use default      # back to production
+```
+
+When a profile is active, every API command prints `Profile '<name>' → <url>` on
+stderr. The banner is suppressed by --quiet. `ZEROX_PROFILE` selects a profile per-environment; `--api-key` /
+`ZEROX_API_KEY` still beat the profile's key.

@@ -15,10 +15,13 @@ use clap_complete::Shell;
         \x20   ZEROX_SOLANA_KEYPAIR     Solana keypair path or base58 (overrides wallet config)\n\
         \x20   ZEROX_DEFAULT_CHAIN      Default chain (overrides config)\n\
         \x20   ZEROX_RPC_URL            RPC URL (overrides config)\n\
+        \x20   ZEROX_PROFILE            Config profile to use (overrides active_profile)\n\
         \x20   NO_COLOR                 Disable colored output\n\n\
         CONFIG:\n\
         \x20   Non-secret values live in ~/.0x-config/config.toml\n\
         \x20   Wallet secrets go to the OS keyring by default (--plaintext to opt out)\n\
+        \x20   Profiles (profiles.<name>.base_url/api_key) switch API environments;\n\
+        \x20   activate with '0x config use <name>' or --profile\n\
         \x20   Run '0x config init' for interactive setup\n\n\
         EXIT CODES:\n\
         \x20   0   Success\n\
@@ -66,6 +69,10 @@ pub struct Cli {
     /// Override the RPC URL for this command
     #[arg(long, global = true, env = "ZEROX_RPC_URL", hide_env = true)]
     pub rpc_url: Option<String>,
+
+    /// Use a named config profile for this command (see '0x config set')
+    #[arg(long, global = true, env = "ZEROX_PROFILE", hide_env = true)]
+    pub profile: Option<String>,
 
     /// Wallet path or name to use
     #[arg(short = 'w', long, global = true)]
@@ -382,14 +389,20 @@ pub enum ConfigAction {
             \x20   rpc.<chain>              RPC URL for a chain (e.g. rpc.base)\n\
             \x20   wallet.evm               EVM private key (hex) — secret, → keyring\n\
             \x20   wallet.solana            Solana keypair: file path (config file)\n\
-            \x20                            OR base58/JSON-array secret (→ keyring)\n\n\
+            \x20                            OR base58/JSON-array secret (→ keyring)\n\
+            \x20   active_profile           Profile applied when --profile isn't passed\n\
+            \x20   profiles.<name>.base_url Override the API base URL for a profile\n\
+            \x20   profiles.<name>.api_key  API key for a profile\n\n\
             EXAMPLES:\n\
             \x20   0x config set api_key abc123def456\n\
             \x20   0x config set defaults.chain base\n\
             \x20   0x config set rpc.base https://base.llamarpc.com\n\
             \x20   0x config set wallet.evm 0xac09...                    # → keyring\n\
             \x20   0x config set wallet.evm 0xac09... --plaintext        # → config file\n\
-            \x20   0x config set wallet.solana /path/to/keypair.json     # → config file\n\n\
+            \x20   0x config set wallet.solana /path/to/keypair.json     # → config file\n\
+            \x20   0x config set profiles.stg.base_url https://staging.example.com\n\
+            \x20   0x config set profiles.stg.api_key abc123\n\
+            \x20   0x config use stg\n\n\
             RESPONSE (data field):\n\
             \x20   key      string  The configuration key that was set\n\
             \x20   value    string  The stored value (redacted for secrets)\n\
@@ -428,6 +441,17 @@ pub enum ConfigAction {
     Unset {
         /// Configuration key (dot-notation supported)
         key: String,
+    },
+
+    /// Switch the active profile (or back to the default environment)
+    #[command(after_help = "EXAMPLES:\n\
+        \x20   0x config use stg        # all commands now use profiles.stg\n\
+        \x20   0x config use default    # back to the default (production) environment\n\n\
+        RESPONSE (data field):\n\
+        \x20   active_profile  string?  The now-active profile, or null for default")]
+    Use {
+        /// Profile name, or 'default' to clear the active profile
+        name: String,
     },
 
     /// Show full configuration (secrets redacted)

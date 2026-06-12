@@ -1,6 +1,5 @@
 use crate::api::evm_swap::PriceResponse;
 use crate::api::types::{compute_rate, format_amount, TokenAmount, TokenInfo};
-use crate::api::ApiClient;
 use crate::chain;
 use crate::cli::PriceArgs;
 use crate::config;
@@ -90,8 +89,6 @@ pub async fn run(
 ) -> Result<i32, CliError> {
     let config = config::load_config()?;
 
-    let api_key = config::resolve_api_key(global, &config)?;
-
     // Resolve chain
     let chain_info = chain::resolve_chain(&args.chain)?;
 
@@ -100,7 +97,7 @@ pub async fn run(
     chain::validate_token_address(&args.buy, chain_info)?;
     chain::validate_base_unit_amount(&args.amount)?;
 
-    let client = ApiClient::new(api_key, global.timeout)?;
+    let client = crate::api::client_for(global, &config, output)?;
 
     let spinner = output.spinner("Fetching price...");
 

@@ -441,7 +441,6 @@ pub fn set_config_value(
         key if key.starts_with("profiles.") => {
             let (name, field) = parse_profile_key(key)?;
             validate_profile_name(name)?;
-            let profile = config.profiles.entry(name.to_string()).or_default();
             match field {
                 "base_url" => {
                     if !value.starts_with("https://") && !value.starts_with("http://") {
@@ -452,9 +451,13 @@ pub fn set_config_value(
                             ),
                         });
                     }
-                    profile.base_url = Some(value.trim_end_matches('/').to_string());
+                    config.profiles.entry(name.to_string()).or_default().base_url =
+                        Some(value.trim_end_matches('/').to_string());
                 }
-                "api_key" => profile.api_key = Some(value.to_string()),
+                "api_key" => {
+                    config.profiles.entry(name.to_string()).or_default().api_key =
+                        Some(value.to_string());
+                }
                 _ => {
                     return Err(CliError::Config {
                         code: ErrorCode::InputInvalid,
@@ -890,6 +893,11 @@ mod tests {
         assert!(set_config_value(&mut config, "profiles.default.api_key", "x", false).is_err());
         assert!(set_config_value(&mut config, "profiles.stg.unknown", "x", false).is_err());
         assert!(set_config_value(&mut config, "profiles.stg", "x", false).is_err());
+
+        // A failed set on a fresh name must not leave a phantom profile.
+        assert!(set_config_value(&mut config, "profiles.fresh.base_url", "not-a-url", false).is_err());
+        assert!(set_config_value(&mut config, "profiles.fresh.unknown", "x", false).is_err());
+        assert!(!config.profiles.contains_key("fresh"));
 
         // Unsetting the whole profile also clears a pointing active_profile.
         assert!(unset_config_value(&mut config, "profiles.stg").unwrap());

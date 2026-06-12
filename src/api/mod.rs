@@ -15,9 +15,10 @@ use std::time::Duration;
 
 const SUPPORT_URL: &str = "https://docs.0x.org/docs/need-help/contact-support";
 
-/// 0x API base URL. Hardcoded — there's no staging endpoint exposed publicly,
-/// and a wrong override would be silently catastrophic (sign for the wrong
-/// chain, leak the API key, etc.). Override via `with_base_url` for tests.
+/// Default 0x API base URL. There is no public flag to override it — a wrong
+/// override would be silently catastrophic (sign for the wrong chain, leak
+/// the API key, etc.). Config profiles (`profiles.<name>.base_url`) are the
+/// only supported override, and `client_for` announces the active profile.
 pub const BASE_URL: &str = "https://api.0x.org";
 
 /// Bound the body included with a parse-failure error. Solana responses embed
@@ -190,7 +191,7 @@ fn map_send_error(e: &reqwest_middleware::Error) -> CliError {
 /// backoff. 4xx error bodies are mapped to typed `CliError`s by `send`.
 pub struct ApiClient {
     client: ClientWithMiddleware,
-    base_url: &'static str,
+    base_url: String,
 }
 
 impl ApiClient {
@@ -228,8 +229,14 @@ impl ApiClient {
 
         Ok(Self {
             client,
-            base_url: BASE_URL,
+            base_url: BASE_URL.to_string(),
         })
+    }
+
+    /// Override the API base URL — config profiles and tests only.
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.base_url = base_url;
+        self
     }
 
     /// GET request. Retries on 408/425/429/5xx via middleware.
@@ -478,6 +485,21 @@ impl ApiClient {
     }
 }
 
+/// Resolve the API environment and build the client for it, announcing a
+/// non-default profile on stderr. Commands use this instead of
+/// `ApiClient::new` so a staging override is never silently in effect.
+pub fn client_for(
+    global: &crate::GlobalOpts,
+    config: &crate::config::types::AppConfig,
+    output: &crate::output::OutputHandler,
+) -> Result<ApiClient, CliError> {
+    let env = crate::config::resolve_env(global, config)?;
+    if let Some(name) = &env.profile {
+        output.info(&format!("Profile '{name}' → {}", env.base_url));
+    }
+    Ok(ApiClient::new(env.api_key, global.timeout)?.with_base_url(env.base_url))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +610,16 @@ mod tests {
             EndpointKind::from_path("/something-else"),
             EndpointKind::Other
         );
+    }
+
+    #[test]
+    fn test_with_base_url_overrides_default() {
+        let client = ApiClient::new("test".to_string(), 30)
+            .expect("api client")
+            .with_base_url("https://staging.example.com".to_string());
+        assert_eq!(client.base_url, "https://staging.example.com");
+
+        let client = ApiClient::new("test".to_string(), 30).expect("api client");
+        assert_eq!(client.base_url, BASE_URL);
     }
 }

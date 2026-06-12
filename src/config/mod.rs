@@ -574,11 +574,17 @@ mod tests {
         assert_eq!(env.base_url, "https://staging.example.com");
         assert_eq!(env.api_key, "stg-key");
 
-        // 3. active_profile from config applies when no flag is passed.
-        config.active_profile = Some("stg".to_string());
+        // 3. active_profile from config applies when no flag is passed,
+        //    and the --profile flag wins over it.
+        config.active_profile = Some("other".to_string());
+        config.profiles.insert("other".to_string(), types::Profile::default());
         let env = resolve_env(&global_with(None, None), &config).unwrap();
+        assert_eq!(env.profile.as_deref(), Some("other"));
+        let env = resolve_env(&global_with(Some("stg"), None), &config).unwrap();
         assert_eq!(env.profile.as_deref(), Some("stg"));
+        assert_eq!(env.base_url, "https://staging.example.com");
         config.active_profile = None;
+        config.profiles.remove("other");
 
         // 4. --api-key / ZEROX_API_KEY beats the profile's key.
         let env = resolve_env(&global_with(Some("stg"), Some("flag-key")), &config).unwrap();
@@ -587,11 +593,12 @@ mod tests {
         // 5. Profile without its own key falls back to the default key;
         //    profile without a base_url falls back to BASE_URL.
         config.profiles.insert("keyless".to_string(), types::Profile {
-            base_url: Some("https://staging.example.com".to_string()),
+            base_url: None,
             api_key: None,
         });
         let env = resolve_env(&global_with(Some("keyless"), None), &config).unwrap();
         assert_eq!(env.api_key, "prod-key");
+        assert_eq!(env.base_url, crate::api::BASE_URL);
 
         // 6. Unknown profile errors.
         assert!(resolve_env(&global_with(Some("nope"), None), &config).is_err());

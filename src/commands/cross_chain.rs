@@ -9,6 +9,7 @@ use crate::output::envelope::{Metadata, Warning};
 use crate::output::trade::SideMeta;
 use crate::output::{HumanDisplay, OutputHandler};
 use serde::Serialize;
+use solana_sdk::signer::Signer as _;
 use std::io::{self, Write};
 
 /// Cross-chain swap output.
@@ -395,6 +396,12 @@ pub async fn run(
     };
 
     // Step 1: Get quotes
+    // Some Solana-origin routes (e.g. Circle CCTP) need a one-shot extra
+    // signer whose keypair the caller holds; generating one per request and
+    // sending its pubkey unlocks those routes. The keypair only ever lives
+    // in memory and co-signs at submission.
+    let ephemeral_signer = origin.is_solana().then(solana_sdk::signature::Keypair::new);
+    let ephemeral_signer_pubkey = ephemeral_signer.as_ref().map(|kp| kp.pubkey().to_string());
     let spinner = output.spinner_guard("Fetching cross-chain quotes...");
     let quotes_resp = client
         .get_cross_chain_quotes(
@@ -408,6 +415,7 @@ pub async fn run(
             Some(args.slippage),
             Some(sort_by),
             Some(args.max_quotes),
+            ephemeral_signer_pubkey.as_deref(),
         )
         .await?;
     drop(spinner);
@@ -634,8 +642,12 @@ pub async fn run(
                 suggestion: None,
             })?;
 
+        let mut signers = vec![keypair];
+        if let Some(eph) = ephemeral_signer.as_ref() {
+            signers.push(eph);
+        }
         let signed_tx =
-            crate::chain::solana::sign_preserialized_transaction(serialized_tx, keypair)?;
+            crate::chain::solana::sign_preserialized_transaction(serialized_tx, &signers)?;
 
         let solana_chain = chain::resolve_chain("solana")?;
         let resolved = config::resolve_rpc(global.rpc_url.as_deref(), &config, solana_chain)?;

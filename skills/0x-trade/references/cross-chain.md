@@ -31,6 +31,10 @@ Without `--yes`, the CLI emits the selected quote as a preview envelope and exit
 
 With `--dry-run`, the CLI returns **all** fetched quotes in the envelope (exit 30) without selecting or executing — useful for comparing routes.
 
+## Solana-origin routes and the ephemeral signer
+
+Some Solana-origin routes (Circle CCTP: `circle_forwarder_fast`, `circle_forwarder_standard`) require an extra one-shot transaction signer. The CLI handles this automatically: it generates a fresh keypair per quote request, sends its pubkey as `solanaEphemeralSignerPubkey`, and co-signs the selected transaction at submission. No flag exists and no agent action is needed — these routes simply appear in the quote list alongside the others. The keypair is in-memory only and discarded after the command.
+
 ## Pre-flight checks
 
 - No route / no liquidity → exit 6, `NO_LIQUIDITY`.

@@ -208,6 +208,11 @@ No gas fees required. The 0x protocol handles gas on your behalf.
   --sell USDC --buy USDC --amount 1000000 --sort speed
 ```
 
+Solana-origin swaps automatically include routes that need an extra one-shot
+transaction signer (e.g. Circle CCTP): the CLI generates a fresh keypair per
+quote request, sends its pubkey with the quote, and co-signs at submission.
+Nothing to configure — the keypair lives in memory only.
+
 ### Status Tracking
 
 ```bash

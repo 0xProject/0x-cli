@@ -67,6 +67,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "ZEROX_RPC_URL", hide_env = true)]
     pub rpc_url: Option<String>,
 
+    /// Use a named config profile for this command (see '0x config set')
+    #[arg(long, global = true, env = "ZEROX_PROFILE", hide_env = true)]
+    pub profile: Option<String>,
+
     /// Wallet path or name to use
     #[arg(short = 'w', long, global = true)]
     pub wallet: Option<String>,

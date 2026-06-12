@@ -20,6 +20,7 @@ pub struct GlobalOpts {
     pub yes: bool,
     pub dry_run: bool,
     pub verbose: bool,
+    pub profile: Option<String>,
 }
 
 impl From<&Cli> for GlobalOpts {
@@ -32,6 +33,7 @@ impl From<&Cli> for GlobalOpts {
             yes: cli.yes,
             dry_run: cli.dry_run,
             verbose: cli.verbose,
+            profile: cli.profile.clone(),
         }
     }
 }

@@ -68,6 +68,66 @@ pub fn resolve_api_key(
         .ok_or_else(CliError::api_key_missing)
 }
 
+/// A fully resolved API environment: which profile (if any) is active, the
+/// base URL to hit, and the API key to send.
+#[derive(Debug, Clone)]
+pub struct ResolvedEnv {
+    /// Active profile name; `None` means the default `[api]` section.
+    pub profile: Option<String>,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+/// Resolve the API environment: `--profile` / `ZEROX_PROFILE` first, then
+/// `active_profile` from the config file, then the default `[api]` section.
+/// Within a profile, unset fields fall back to the default section, so a
+/// profile may override just the key or just the URL. The `--api-key` flag
+/// (and `ZEROX_API_KEY`, which clap feeds into it) wins over both.
+pub fn resolve_env(
+    global: &crate::GlobalOpts,
+    config: &AppConfig,
+) -> Result<ResolvedEnv, CliError> {
+    let name = global
+        .profile
+        .as_deref()
+        .or(config.active_profile.as_deref());
+
+    let profile = match name {
+        Some(n) => Some(config.profiles.get(n).ok_or_else(|| {
+            let available = if config.profiles.is_empty() {
+                "none defined".to_string()
+            } else {
+                config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+            };
+            CliError::Config {
+                code: ErrorCode::ConfigNotFound,
+                message: format!(
+                    "Profile '{n}' is not defined (available: {available}). Define it with: 0x config set profiles.{n}.base_url <url>"
+                ),
+            }
+        })?),
+        None => None,
+    };
+
+    let api_key = global
+        .api_key
+        .as_deref()
+        .or_else(|| profile.and_then(|p| p.api_key.as_deref()))
+        .or(config.api.api_key.as_deref())
+        .map(str::to_string)
+        .ok_or_else(CliError::api_key_missing)?;
+
+    let base_url = profile
+        .and_then(|p| p.base_url.clone())
+        .unwrap_or_else(|| crate::api::BASE_URL.to_string());
+
+    Ok(ResolvedEnv {
+        profile: name.map(str::to_string),
+        base_url,
+        api_key,
+    })
+}
+
 /// Resolve an RPC URL, preferring `override_url` (CLI flag / env var), then
 /// the config file's `rpc.<name>` or `rpc.<numeric_id>` entry, then the
 /// chain's built-in public default. Errors only when none of the above
@@ -475,6 +535,70 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::env::set_var("HOME", tmp.path());
         f();
+    }
+
+    fn global_with(profile: Option<&str>, api_key: Option<&str>) -> crate::GlobalOpts {
+        crate::GlobalOpts {
+            api_key: api_key.map(str::to_string),
+            wallet: None,
+            rpc_url: None,
+            timeout: 30,
+            yes: false,
+            dry_run: false,
+            verbose: false,
+            profile: profile.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_resolve_env_precedence() {
+        let mut config = AppConfig::default();
+        config.api.api_key = Some("prod-key".to_string());
+        config.profiles.insert(
+            "stg".to_string(),
+            types::Profile {
+                base_url: Some("https://staging.example.com".to_string()),
+                api_key: Some("stg-key".to_string()),
+            },
+        );
+
+        // 1. No profile anywhere → default env.
+        let env = resolve_env(&global_with(None, None), &config).unwrap();
+        assert!(env.profile.is_none());
+        assert_eq!(env.base_url, crate::api::BASE_URL);
+        assert_eq!(env.api_key, "prod-key");
+
+        // 2. --profile flag selects the profile.
+        let env = resolve_env(&global_with(Some("stg"), None), &config).unwrap();
+        assert_eq!(env.profile.as_deref(), Some("stg"));
+        assert_eq!(env.base_url, "https://staging.example.com");
+        assert_eq!(env.api_key, "stg-key");
+
+        // 3. active_profile from config applies when no flag is passed.
+        config.active_profile = Some("stg".to_string());
+        let env = resolve_env(&global_with(None, None), &config).unwrap();
+        assert_eq!(env.profile.as_deref(), Some("stg"));
+        config.active_profile = None;
+
+        // 4. --api-key / ZEROX_API_KEY beats the profile's key.
+        let env = resolve_env(&global_with(Some("stg"), Some("flag-key")), &config).unwrap();
+        assert_eq!(env.api_key, "flag-key");
+
+        // 5. Profile without its own key falls back to the default key;
+        //    profile without a base_url falls back to BASE_URL.
+        config.profiles.insert("keyless".to_string(), types::Profile {
+            base_url: Some("https://staging.example.com".to_string()),
+            api_key: None,
+        });
+        let env = resolve_env(&global_with(Some("keyless"), None), &config).unwrap();
+        assert_eq!(env.api_key, "prod-key");
+
+        // 6. Unknown profile errors.
+        assert!(resolve_env(&global_with(Some("nope"), None), &config).is_err());
+
+        // 7. No key anywhere errors.
+        config.api.api_key = None;
+        assert!(resolve_env(&global_with(Some("keyless"), None), &config).is_err());
     }
 
     #[test]

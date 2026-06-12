@@ -56,10 +56,7 @@ impl ResolvedRpc {
 /// (which already has `ZEROX_API_KEY` overlaid by [`load_config`]). Errors
 /// with the structured `API_KEY_MISSING` when neither is set — every command
 /// needs this exact chain, so it lives here instead of being copy-pasted.
-pub fn resolve_api_key(
-    global: &crate::GlobalOpts,
-    config: &AppConfig,
-) -> Result<String, CliError> {
+pub fn resolve_api_key(global: &crate::GlobalOpts, config: &AppConfig) -> Result<String, CliError> {
     global
         .api_key
         .as_deref()

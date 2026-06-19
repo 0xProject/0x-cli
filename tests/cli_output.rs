@@ -453,6 +453,61 @@ fn test_config_unset_rpc_clears_it() {
     assert_eq!(json["rpc"], serde_json::json!({}));
 }
 
+// ─── Telemetry ────────────────────────────────────────────────
+
+/// The test binary is built without a compiled-in Amplitude key, so telemetry
+/// must be fully inert: running a command writes no queue file and mints no
+/// install id, regardless of opt-out env. This guards that dev/CI builds never
+/// phone home or leave telemetry artifacts.
+#[test]
+fn test_telemetry_inert_without_compiled_key() {
+    let (mut cmd, tmp) = cmd_in_temp_home();
+    cmd.args(["chains", "-o", "json"]).assert().success();
+
+    let queue = tmp.path().join(".0x-config/telemetry-queue.jsonl");
+    assert!(!queue.exists(), "telemetry queue should not exist in a keyless build");
+
+    // No install id should have been persisted either.
+    let config = tmp.path().join(".0x-config/config.toml");
+    if config.exists() {
+        let body = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            !body.contains("install_id"),
+            "no install id should be minted without a compiled key"
+        );
+    }
+}
+
+/// Opt-out env vars are honored without error and leave no telemetry trace.
+#[test]
+fn test_telemetry_opt_out_env_leaves_no_trace() {
+    for (k, v) in [("DO_NOT_TRACK", "1"), ("ZEROX_TELEMETRY", "0")] {
+        let (mut cmd, tmp) = cmd_in_temp_home();
+        cmd.env(k, v).args(["chains", "-o", "json"]).assert().success();
+        let queue = tmp.path().join(".0x-config/telemetry-queue.jsonl");
+        assert!(!queue.exists(), "{k}={v} should produce no telemetry queue");
+    }
+}
+
+/// `telemetry.enabled` is a first-class config key end-to-end.
+#[test]
+fn test_telemetry_config_roundtrip() {
+    let (mut set_cmd, tmp) = cmd_in_temp_home();
+    set_cmd
+        .args(["config", "set", "telemetry.enabled", "false", "-o", "json"])
+        .assert()
+        .success();
+
+    let mut show = Command::cargo_bin("0x").unwrap();
+    show.env("HOME", tmp.path());
+    let out = show
+        .args(["config", "show", "-o", "json"])
+        .output()
+        .expect("show failed");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(json["telemetry"]["enabled"], false);
+}
+
 // ─── Completions ──────────────────────────────────────────────
 
 #[test]

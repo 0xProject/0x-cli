@@ -1,8 +1,10 @@
 use clap::Parser;
 use std::io::IsTerminal;
+use std::time::Instant;
 use zero_x_cli::cli::{Cli, Commands, ConfigAction, SkillAction};
 use zero_x_cli::output::envelope::Metadata;
 use zero_x_cli::output::OutputHandler;
+use zero_x_cli::telemetry::{self, CommandEvent};
 use zero_x_cli::{cli::OutputFormat, commands, error, GlobalOpts};
 
 #[tokio::main]
@@ -20,10 +22,26 @@ async fn main() {
     let output = OutputHandler::new(format, color, cli.quiet);
     let global = GlobalOpts::from(&cli);
 
-    let exit_code = match run_command(&cli, &output, &global).await {
-        Ok(code) => code,
-        Err(err) => output.error(cli.command.name(), &err, Metadata::default()),
+    // Set up telemetry before running the command so its background flush of
+    // any queued events overlaps the command's own network work. `None` (and
+    // a no-op) whenever telemetry is disabled or no key is compiled in.
+    let telemetry = telemetry::init();
+
+    let started = Instant::now();
+    let result = run_command(&cli, &output, &global).await;
+    let duration = started.elapsed();
+
+    // Capture the stable error code before `output.error` borrows the error.
+    let error_code = result.as_ref().err().map(|err| err.code().as_str());
+    let exit_code = match &result {
+        Ok(code) => *code,
+        Err(err) => output.error(cli.command.name(), err, Metadata::default()),
     };
+
+    if let Some(telemetry) = telemetry {
+        let event = CommandEvent::from_cli(&cli, exit_code, error_code, duration, format);
+        telemetry.record(event).await;
+    }
 
     std::process::exit(exit_code);
 }

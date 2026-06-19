@@ -1,9 +1,26 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Current config schema version. Bump when a change to `AppConfig` needs a
+/// migration (renamed/retyped fields, semantic changes) and add the
+/// transformation step in `config::validate_and_migrate`.
+pub const CONFIG_VERSION: u32 = 1;
+
+/// Serde default for files written before the version field existed —
+/// version-less configs are v1 by definition.
+fn default_config_version() -> u32 {
+    1
+}
+
 /// Top-level CLI configuration stored in ~/.0x-config/config.toml
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    /// Schema version. Stamped to [`CONFIG_VERSION`] on every save; files
+    /// from a *newer* CLI are rejected on load instead of being silently
+    /// misread. Plain value — TOML requires these before any table.
+    #[serde(default = "default_config_version")]
+    pub version: u32,
+
     /// Profile applied when `--profile` isn't passed. Declared before the
     /// table fields — TOML requires plain values to precede tables.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -26,6 +43,26 @@ pub struct AppConfig {
     /// `[api]` section at resolution time.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub profiles: HashMap<String, Profile>,
+
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            // Derived Default would zero this — fresh configs must carry the
+            // current schema version.
+            version: CONFIG_VERSION,
+            active_profile: None,
+            api: ApiConfig::default(),
+            defaults: Defaults::default(),
+            rpc: HashMap::new(),
+            wallet: WalletConfig::default(),
+            profiles: HashMap::new(),
+            telemetry: TelemetryConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -76,6 +113,39 @@ pub struct WalletConfig {
     /// Solana keypair file path or base58 string
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solana: Option<String>,
+}
+
+/// Anonymous usage telemetry settings. Telemetry is opt-out (default on) but
+/// only ever sends when an Amplitude key is compiled into the binary — dev and
+/// CI builds have none, so they are inert. See `crate::telemetry`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryConfig {
+    /// Whether anonymous usage stats may be sent. User-settable via
+    /// `0x config set telemetry.enabled false` (also overridable by the
+    /// `ZEROX_TELEMETRY` / `DO_NOT_TRACK` env vars).
+    #[serde(default = "default_telemetry_enabled")]
+    pub enabled: bool,
+
+    /// Random anonymous install token, generated once on first activation.
+    /// Deliberately *not* a device or hardware identifier — just a fresh UUID
+    /// so events from the same install group together. Settable only by the
+    /// CLI, but visible in `config show` so users can see exactly what
+    /// identifies them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_id: Option<String>,
+}
+
+fn default_telemetry_enabled() -> bool {
+    true
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_telemetry_enabled(),
+            install_id: None,
+        }
+    }
 }
 
 impl AppConfig {
@@ -144,10 +214,37 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
+        assert_eq!(config.version, CONFIG_VERSION);
         assert_eq!(config.defaults.slippage_bps, 100);
         assert_eq!(config.defaults.approval_type, "exact");
         assert!(config.api.api_key.is_none());
         assert!(config.rpc.is_empty());
+    }
+
+    /// Files written before the version field existed must load as v1, not
+    /// fail to parse and not default to 0.
+    #[test]
+    fn test_versionless_toml_loads_as_v1() {
+        let parsed: AppConfig = toml::from_str(
+            r#"
+            [api]
+            api_key = "test-key"
+
+            [defaults]
+            slippage_bps = 100
+            approval_type = "exact"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(parsed.version, 1);
+    }
+
+    #[test]
+    fn test_version_roundtrips_through_toml() {
+        let toml_str = toml::to_string_pretty(&AppConfig::default()).unwrap();
+        assert!(toml_str.contains("version = 1"), "got: {toml_str}");
+        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.version, CONFIG_VERSION);
     }
 
     #[test]
@@ -176,6 +273,7 @@ mod tests {
     #[test]
     fn test_roundtrip_toml() {
         let config = AppConfig {
+            version: CONFIG_VERSION,
             active_profile: None,
             api: ApiConfig {
                 api_key: Some("test-key".to_string()),
@@ -195,6 +293,7 @@ mod tests {
                 solana: None,
             },
             profiles: HashMap::new(),
+            telemetry: TelemetryConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -232,5 +331,24 @@ mod tests {
         let stg = redacted.profiles.get("stg").unwrap();
         assert_eq!(stg.api_key.as_deref(), Some("stg-...5678"));
         assert_eq!(stg.base_url.as_deref(), Some("https://staging.example.com"));
+    }
+
+    #[test]
+    fn test_telemetry_defaults_on_for_existing_configs() {
+        // A config file written before telemetry existed (no [telemetry]
+        // table) must deserialize with telemetry enabled and no install id.
+        let parsed: AppConfig = toml::from_str(
+            r#"
+            [api]
+            api_key = "test-key"
+
+            [defaults]
+            slippage_bps = 100
+            approval_type = "exact"
+            "#,
+        )
+        .unwrap();
+        assert!(parsed.telemetry.enabled);
+        assert!(parsed.telemetry.install_id.is_none());
     }
 }

@@ -16,6 +16,8 @@ use clap_complete::Shell;
         \x20   ZEROX_DEFAULT_CHAIN      Default chain (overrides config)\n\
         \x20   ZEROX_RPC_URL            RPC URL (overrides config)\n\
         \x20   ZEROX_PROFILE            Config profile to use (overrides active_profile)\n\
+        \x20   ZEROX_TELEMETRY          Set falsy (0/false/off) to disable usage telemetry\n\
+        \x20   DO_NOT_TRACK             Set to 1 to disable usage telemetry\n\
         \x20   NO_COLOR                 Disable colored output\n\n\
         CONFIG:\n\
         \x20   Non-secret values live in ~/.0x-config/config.toml\n\

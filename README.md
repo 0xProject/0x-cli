@@ -106,6 +106,8 @@ Environment variables always take precedence over config file values.
 | `ZEROX_SOLANA_KEYPAIR` | Solana keypair file path or base58 |
 | `ZEROX_DEFAULT_CHAIN` | Default chain name or ID |
 | `ZEROX_RPC_URL` | Override RPC URL for any chain |
+| `ZEROX_TELEMETRY` | Set falsy (`0`/`false`/`off`) to disable usage telemetry |
+| `DO_NOT_TRACK` | Set to `1` to disable usage telemetry |
 | `NO_COLOR` | Disable colored output |
 
 ### Config File
@@ -407,6 +409,37 @@ Every interactive prompt has a flag equivalent:
 - **Transaction simulation**: Every transaction is simulated via `eth_call` (EVM) or `simulate_transaction` (Solana) before submission
 - **Approval strategy**: Default is `exact` (only approve the needed amount). Use `--approval unlimited` for max approval.
 - **Environment variables**: Sensitive values like private keys can be set via env vars (`ZEROX_EVM_PRIVATE_KEY`, `ZEROX_SOLANA_KEYPAIR`) to avoid persisting them at all — read-once, never written to disk or keyring.
+
+## Telemetry
+
+The CLI sends **anonymous, opt-out** usage statistics (via Amplitude) to help us prioritize chains, surface common errors, and track version adoption. It's designed to be minimal and never in your way.
+
+**What's sent**, one event per command:
+
+| Field | Example |
+|-------|---------|
+| `command` | `swap`, `cross-chain`, `price` |
+| `exit_code` | `0`, `6` |
+| `error_code` | `INSUFFICIENT_BALANCE` (stable code, never the message) |
+| `duration_ms` | `423` |
+| `chain` | `base` (chain **name** only) |
+| `gasless` / `dry_run` | `true` / `false` |
+| `output_format` | `human` / `json` / `json-envelope` |
+| `ci` | whether `CI` is set |
+| `app_version`, `os_name`, `platform` | `0.1.0`, `macos`, `aarch64` |
+| `install_id` | a random UUID generated once — **not** a device or hardware identifier |
+
+**Never sent:** token addresses, amounts, transaction/trade hashes, wallet addresses, API keys, RPC URLs, error messages, or your IP.
+
+**Opt out** any of three ways:
+
+```bash
+0x config set telemetry.enabled false   # persistent
+export ZEROX_TELEMETRY=0                 # per-shell
+export DO_NOT_TRACK=1                    # cross-tool standard
+```
+
+**How it works:** on the first tracked run you'll see a one-time notice. Events spool to `~/.0x-config/telemetry-queue.jsonl` and are flushed in the background during the *next* command plus a ≤300ms best-effort flush at exit — so telemetry never adds latency to your command. Builds without a compiled-in Amplitude key (all local/dev builds) send nothing at all.
 
 ## Development
 

@@ -201,13 +201,38 @@ pub fn load_config_disk_only() -> Result<AppConfig, CliError> {
             code: ErrorCode::ConfigInvalid,
             message: format!("Failed to read config file: {e}"),
         })?;
-        toml::from_str::<AppConfig>(&contents).map_err(|e| CliError::Config {
-            code: ErrorCode::ConfigInvalid,
-            message: format!("Failed to parse config file: {e}"),
-        })
+        let mut config =
+            toml::from_str::<AppConfig>(&contents).map_err(|e| CliError::Config {
+                code: ErrorCode::ConfigInvalid,
+                message: format!("Failed to parse config file: {e}"),
+            })?;
+        validate_and_migrate(&mut config)?;
+        Ok(config)
     } else {
         Ok(AppConfig::default())
     }
+}
+
+/// Reject configs written by a newer CLI and upgrade older schemas in
+/// memory (persisted on the next `save_config`). This is the migration
+/// seam: when `CONFIG_VERSION` grows, match on `config.version` here and
+/// transform step by step (v1 → v2 → …), bumping `config.version` as each
+/// step completes.
+fn validate_and_migrate(config: &mut AppConfig) -> Result<(), CliError> {
+    if config.version > types::CONFIG_VERSION {
+        return Err(CliError::Config {
+            code: ErrorCode::ConfigInvalid,
+            message: format!(
+                "Config file is schema version {} but this CLI understands up to {}. It was written by a newer CLI — upgrade the CLI, or re-run '0x config init'.",
+                config.version,
+                types::CONFIG_VERSION
+            ),
+        });
+    }
+    // No migrations exist yet — every older (or version-less) file is
+    // structurally identical to v1; just normalize the number.
+    config.version = types::CONFIG_VERSION;
+    Ok(())
 }
 
 /// Load configuration from disk and overlay environment variables.
@@ -258,7 +283,11 @@ pub fn save_config(config: &AppConfig) -> Result<(), CliError> {
         }
     }
 
-    let toml_str = toml::to_string_pretty(config).map_err(|e| CliError::Config {
+    // Always stamp the current schema version on the way out, regardless of
+    // what the in-memory copy carried.
+    let mut to_save = config.clone();
+    to_save.version = types::CONFIG_VERSION;
+    let toml_str = toml::to_string_pretty(&to_save).map_err(|e| CliError::Config {
         code: ErrorCode::ConfigInvalid,
         message: format!("Failed to serialize config: {e}"),
     })?;
@@ -462,6 +491,16 @@ pub fn set_config_value(
             }
             Ok(SecretStorage::Config)
         }
+        "telemetry.enabled" => {
+            let parsed = parse_bool(value).ok_or_else(|| CliError::Config {
+                code: ErrorCode::InputInvalid,
+                message: format!(
+                    "Invalid telemetry.enabled value '{value}'. Use 'true' or 'false'"
+                ),
+            })?;
+            config.telemetry.enabled = parsed;
+            Ok(SecretStorage::Config)
+        }
         key if key.starts_with("rpc.") => {
             let chain = key.strip_prefix("rpc.").unwrap();
             config.rpc.insert(chain.to_string(), value.to_string());
@@ -471,6 +510,16 @@ pub fn set_config_value(
             code: ErrorCode::InputInvalid,
             message: format!("Unknown config key: '{key}'"),
         }),
+    }
+}
+
+/// Parse a permissive boolean for config values: true/false, 1/0, yes/no,
+/// on/off (case-insensitive).
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -560,6 +609,13 @@ pub fn unset_config_value(config: &mut AppConfig, key: &str) -> Result<bool, Cli
                 }
             }
         }
+        "telemetry.enabled" => {
+            // Reset to default (on) rather than removing — the field isn't Option.
+            if !config.telemetry.enabled {
+                config.telemetry.enabled = types::TelemetryConfig::default().enabled;
+                changed = true;
+            }
+        }
         key if key.starts_with("rpc.") => {
             let chain = key.strip_prefix("rpc.").unwrap();
             changed = config.rpc.remove(chain).is_some();
@@ -618,6 +674,8 @@ pub fn get_config_value(config: &AppConfig, key: &str) -> Result<String, CliErro
                 }
             }
         }
+        "telemetry.enabled" => Some(config.telemetry.enabled.to_string()),
+        "telemetry.install_id" => config.telemetry.install_id.clone(),
         key if key.starts_with("rpc.") => {
             let chain = key.strip_prefix("rpc.").unwrap();
             config.rpc.get(chain).cloned()
@@ -786,6 +844,43 @@ mod tests {
     }
 
     #[test]
+    fn test_telemetry_enabled_set_get_unset() {
+        let mut config = AppConfig::default();
+        // Default is on.
+        assert_eq!(get_config_value(&config, "telemetry.enabled").unwrap(), "true");
+
+        // Set false (accepts permissive bools).
+        set_config_value(&mut config, "telemetry.enabled", "false", false).unwrap();
+        assert!(!config.telemetry.enabled);
+        assert_eq!(get_config_value(&config, "telemetry.enabled").unwrap(), "false");
+
+        // Non-bool rejected.
+        assert!(set_config_value(&mut config, "telemetry.enabled", "maybe", false).is_err());
+
+        // Unset resets to the default (on).
+        let changed = unset_config_value(&mut config, "telemetry.enabled").unwrap();
+        assert!(changed);
+        assert!(config.telemetry.enabled);
+        // Unsetting again is a no-op.
+        assert!(!unset_config_value(&mut config, "telemetry.enabled").unwrap());
+    }
+
+    #[test]
+    fn test_telemetry_install_id_readable_not_settable() {
+        let mut config = AppConfig::default();
+        // Not settable via config set.
+        assert!(set_config_value(&mut config, "telemetry.install_id", "x", false).is_err());
+        // Unset before minting → ConfigNotFound on get.
+        assert!(get_config_value(&config, "telemetry.install_id").is_err());
+        // Once present, it's readable verbatim (users can see what identifies them).
+        config.telemetry.install_id = Some("abc-123".into());
+        assert_eq!(
+            get_config_value(&config, "telemetry.install_id").unwrap(),
+            "abc-123"
+        );
+    }
+
+    #[test]
     fn test_solana_path_stays_in_config() {
         let mut config = AppConfig::default();
         let storage = set_config_value(
@@ -939,5 +1034,30 @@ mod tests {
         assert!(unset_config_value(&mut config, "profiles.empty.api_key").unwrap());
         assert!(config.profiles.is_empty());
         assert!(config.active_profile.is_none());
+    }
+
+    /// A config stamped by a newer CLI must be rejected with CONFIG_INVALID
+    /// (exit 3), not silently misread.
+    #[test]
+    fn test_future_config_version_rejected() {
+        let mut config = AppConfig {
+            version: types::CONFIG_VERSION + 1,
+            ..Default::default()
+        };
+        let err = validate_and_migrate(&mut config).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::ConfigInvalid);
+        assert!(err.to_string().contains("newer CLI"));
+    }
+
+    /// Older (or version-less, which serde defaults to 1) schemas are
+    /// upgraded in memory and normalized to the current version.
+    #[test]
+    fn test_older_config_version_migrates_to_current() {
+        let mut config = AppConfig {
+            version: 0,
+            ..Default::default()
+        };
+        validate_and_migrate(&mut config).unwrap();
+        assert_eq!(config.version, types::CONFIG_VERSION);
     }
 }

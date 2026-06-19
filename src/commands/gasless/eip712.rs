@@ -1,373 +1,22 @@
-use crate::api::gasless::{GaslessSubmitRequest, GaslessSubmitSignable, SignatureSplit};
-use crate::api::types::{display_amount, TokenAmount, TokenInfo};
-use crate::api::ApiClient;
-use crate::chain::{self};
-use crate::cli::SwapArgs;
-use crate::config;
-use crate::confirm::{confirm_or_preview, ConfirmFlow, TradeSummary};
+//! EIP-712 signing and signature-safety validation for gasless swaps.
+//!
+//! Everything here exists to make sure the CLI never signs a payload the API
+//! could have tampered with: domain bindings (chainId, verifyingContract),
+//! Permit2 trade bindings (token, amount), and per-type approval message
+//! checks (EIP-2612 permit, daiPermit, Polygon meta-transaction approve).
+//! All checks fail closed — a missing or malformed field refuses to sign.
+
+use crate::api::gasless::SignatureSplit;
 use crate::error::{CliError, ErrorCode};
-use crate::output::envelope::{Metadata, Warning};
-use crate::output::trade::SideMeta;
-use crate::output::{HumanDisplay, OutputHandler};
-use crate::token_cache::{resolve_pair_evm, TokenCache};
 use alloy::primitives::{Address, U256};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::SignerSync;
 use alloy_dyn_abi::eip712::TypedData;
-use serde::Serialize;
-use std::io::{self, Write};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Gasless swap result.
-#[derive(Debug, Serialize)]
-pub struct GaslessSwapOutput {
-    pub chain: String,
-    pub sell_token: TokenInfo,
-    pub buy_token: TokenInfo,
-    pub sell_amount: TokenAmount,
-    pub buy_amount: TokenAmount,
-    pub min_buy_amount: TokenAmount,
-    pub trade_hash: String,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tx_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub explorer_url: Option<String>,
-    pub terminal: bool,
-    pub successful: bool,
-    pub dry_run: bool,
-}
-
-impl HumanDisplay for GaslessSwapOutput {
-    fn display_human(&self, writer: &mut dyn Write, color: bool) -> io::Result<()> {
-        use colored::Colorize;
-
-        if self.dry_run {
-            if color {
-                writeln!(writer, "\n  {}", "Gasless Dry Run Complete".bold().yellow())?;
-            } else {
-                writeln!(writer, "\n  Gasless Dry Run Complete")?;
-            }
-        } else if self.successful {
-            if color {
-                writeln!(writer, "\n  {}", "Gasless Swap Complete".bold().green())?;
-            } else {
-                writeln!(writer, "\n  Gasless Swap Complete")?;
-            }
-        } else if color {
-            writeln!(
-                writer,
-                "\n  {}",
-                format!("Gasless Swap: {}", self.status).bold()
-            )?;
-        } else {
-            writeln!(writer, "\n  Gasless Swap: {}", self.status)?;
-        }
-
-        writeln!(writer, "  {}", "-".repeat(45))?;
-
-        let sell_label = self
-            .sell_token
-            .symbol
-            .as_deref()
-            .unwrap_or(&self.sell_token.address);
-        let buy_label = self
-            .buy_token
-            .symbol
-            .as_deref()
-            .unwrap_or(&self.buy_token.address);
-
-        writeln!(
-            writer,
-            "  {:<14} {} {}",
-            "Sell:",
-            self.sell_amount.display(),
-            sell_label
-        )?;
-        writeln!(
-            writer,
-            "  {:<14} {} {}",
-            "Buy:",
-            self.buy_amount.display(),
-            buy_label
-        )?;
-        writeln!(writer, "  {:<14} {}", "Trade Hash:", self.trade_hash)?;
-        writeln!(writer, "  {:<14} {}", "Status:", self.status)?;
-
-        if let Some(ref hash) = self.tx_hash {
-            writeln!(writer, "  {:<14} {}", "Tx Hash:", hash)?;
-        }
-        if let Some(ref url) = self.explorer_url {
-            writeln!(writer, "  {:<14} {}", "Explorer:", url)?;
-        }
-
-        Ok(())
-    }
-}
-
-/// Execute a gasless swap.
-pub async fn run_gasless(
-    args: &SwapArgs,
-    output: &OutputHandler,
-    global: &crate::GlobalOpts,
-) -> Result<i32, CliError> {
-    let config = config::load_config()?;
-    let chain_info = chain::resolve_chain(&args.chain)?;
-    let chain_id = chain_info.numeric_id().ok_or_else(|| CliError::Api {
-        code: ErrorCode::InputInvalid,
-        message: "Gasless swaps are only supported on EVM chains".into(),
-        status: None,
-        details: None,
-        suggestion: Some("Use --chain with an EVM chain like 'base' or 'ethereum'".into()),
-    })?;
-
-    let signer = crate::wallet::evm::load_evm_signer(&config, global.wallet.as_deref())?;
-    let taker = format!("{:?}", signer.address());
-
-    let mut metadata = Metadata::for_chain(chain_info);
-    let client = crate::api::client_for(global, &config, output)?;
-
-    // Step 1: Get gasless quote
-    let spinner = output.spinner_guard("Fetching gasless quote...");
-    let quote = client
-        .get_gasless_quote(chain_id, &args.sell, &args.buy, &args.amount, &taker)
-        .await?;
-    drop(spinner);
-
-    // Populate zid
-    metadata.zid = quote.zid.clone();
-
-    // Balance shortfalls arrive inside the 200 quote response
-    // (`issues.balance`), not as an API error — fail with
-    // INSUFFICIENT_BALANCE before asking the user to confirm a doomed trade.
-    if let Some(balance) = quote.issues.as_ref().and_then(|i| i.balance.as_ref()) {
-        return Err(balance.to_error());
-    }
-
-    // Resolve token metadata for correct decimals
-    let rpc_url =
-        config::try_resolve_rpc_url_with_override(global.rpc_url.as_deref(), &config, chain_info);
-    let mut cache = TokenCache::new();
-    let mut metadata_warnings: Vec<Warning> = Vec::new();
-    let (sell_meta, buy_meta) = resolve_pair_evm(
-        &mut cache,
-        rpc_url.as_deref(),
-        chain_id,
-        &quote.sell_token,
-        &quote.buy_token,
-        &mut metadata_warnings,
-    )
-    .await;
-    let sell = SideMeta::from_meta(quote.sell_token.clone(), sell_meta);
-    let buy = SideMeta::from_meta(quote.buy_token.clone(), buy_meta);
-
-    // Show confirmation
-    let sell_display = display_amount(&quote.sell_amount, sell.decimals);
-    let buy_display = display_amount(&quote.buy_amount, buy.decimals);
-
-    let summary = TradeSummary::new(format!("Gasless Swap on {}", chain_info.display_name))
-        .row("Sell", format!("{sell_display} {}", sell.label()))
-        .row("Buy", format!("{buy_display} {}", buy.label()))
-        .row("Gas", "None (gasless)")
-        .row("Slippage", format!("{:.2}%", args.slippage as f64 / 100.0));
-
-    let preview = gasless_output(
-        chain_info,
-        &sell,
-        &buy,
-        &quote,
-        String::new(),
-        "needs_confirmation",
-        None,
-        false,
-        false,
-        false,
-    );
-    // Dry-run bypasses the confirmation gate (read-only path, nothing to sign).
-    let auto_confirm = global.yes || global.dry_run;
-    match confirm_or_preview(
-        output,
-        auto_confirm,
-        &summary,
-        "swap",
-        &preview,
-        metadata.clone(),
-        metadata_warnings.clone(),
-    )? {
-        ConfirmFlow::Confirmed => {}
-        ConfirmFlow::PreviewEmitted => return Ok(25),
-    }
-
-    // Dry-run: stop before signing and submitting. The gasless relayer would
-    // execute the trade on submit, so there is no on-chain simulation step the
-    // way there is for a regular EVM swap — the safe behavior is to exit with
-    // the quoted amounts and skip the rest.
-    if global.dry_run {
-        let preview = gasless_output(
-            chain_info,
-            &sell,
-            &buy,
-            &quote,
-            String::new(),
-            "dry_run",
-            None,
-            true,
-            true,
-            true,
-        );
-        return Ok(output.emit_success("swap", &preview, metadata, metadata_warnings, 30));
-    }
-
-    // Step 2: Sign approval EIP-712 (if present)
-    let spinner = output.spinner_guard("Signing trade...");
-
-    let approval_signable = if let Some(ref approval) = quote.approval {
-        validate_approval(
-            &approval.signable_type,
-            &approval.eip712,
-            &quote.sell_token,
-            &quote.sell_amount,
-            signer.address(),
-            chain_id,
-        )?;
-        let sig = sign_eip712(&signer, &approval.eip712)?;
-        Some(GaslessSubmitSignable {
-            signable_type: approval.signable_type.clone(),
-            eip712: approval.eip712.clone(),
-            signature: sig,
-        })
-    } else {
-        None
-    };
-
-    // Step 3: Sign trade EIP-712
-    let trade = quote.trade.as_ref().ok_or_else(|| CliError::Api {
-        code: ErrorCode::ApiError,
-        message: "Gasless quote missing trade data".into(),
-        status: None,
-        details: None,
-        suggestion: None,
-    })?;
-
-    validate_trade_domain(&trade.eip712, &trade.signable_type, chain_id)?;
-    // Bind the Permit2 trade signable to the quote's sellToken/sellAmount
-    // so a tampered API response can't reroute the trade to a different
-    // asset between quote and signature.
-    validate_trade_permitted(&trade.eip712, &quote.sell_token, &quote.sell_amount)?;
-
-    let trade_sig = sign_eip712(&signer, &trade.eip712)?;
-    let trade_signable = GaslessSubmitSignable {
-        signable_type: trade.signable_type.clone(),
-        eip712: trade.eip712.clone(),
-        signature: trade_sig,
-    };
-
-    drop(spinner);
-
-    // Step 4: Submit
-    let spinner = output.spinner_guard("Submitting gasless swap...");
-    let submit_req = GaslessSubmitRequest {
-        chain_id,
-        trade: trade_signable,
-        approval: approval_signable,
-    };
-
-    let submit_resp = client.submit_gasless(&submit_req).await?;
-
-    drop(spinner);
-
-    output.info(&format!("Trade hash: {}", submit_resp.trade_hash));
-
-    // Step 5: Poll status
-    let spinner = output.spinner_guard("Waiting for confirmation...");
-    let final_status = poll_gasless_status(
-        &client,
-        &submit_resp.trade_hash,
-        chain_id,
-        spinner.progress_bar(),
-    )
-    .await?;
-    drop(spinner);
-
-    let tx_hash = final_status
-        .transactions
-        .first()
-        .and_then(|t| t.hash.clone());
-
-    let explorer_url = tx_hash.as_ref().map(|h| chain_info.explorer_tx_url(h));
-
-    // `poll_gasless_status` only returns Ok on a terminal state, so we know
-    // `final_status.is_terminal()` is true here. Non-terminal states surface
-    // as `CliError::Timeout` (exit code 12) and are handled by the `?` above.
-    let tx = tx_hash.zip(explorer_url);
-    let result = gasless_output(
-        chain_info,
-        &sell,
-        &buy,
-        &quote,
-        submit_resp.trade_hash,
-        &final_status.status,
-        tx,
-        true,
-        final_status.is_successful(),
-        false,
-    );
-
-    let mut warnings = metadata_warnings;
-    if !final_status.is_successful() {
-        warnings.push(Warning {
-            code: "TRADE_FAILED".into(),
-            message: format!("Trade ended with status: {}", final_status.status),
-        });
-    }
-
-    let exit_code = if final_status.is_successful() { 0 } else { 11 };
-
-    Ok(output.emit_success("swap", &result, metadata, warnings, exit_code))
-}
-
-/// Assemble a `GaslessSwapOutput` from a quote + outcome. Centralises the
-/// `TokenInfo` / `TokenAmount` construction so the four call sites
-/// (needs-confirmation preview, dry-run preview, final success/failure) can't
-/// drift.
-#[allow(clippy::too_many_arguments)]
-fn gasless_output(
-    chain_info: &chain::ChainInfo,
-    sell: &SideMeta,
-    buy: &SideMeta,
-    quote: &crate::api::gasless::GaslessQuoteResponse,
-    trade_hash: String,
-    status: &str,
-    tx: Option<(String, String)>,
-    terminal: bool,
-    successful: bool,
-    dry_run: bool,
-) -> GaslessSwapOutput {
-    let (tx_hash, explorer_url) = match tx {
-        Some((hash, explorer)) => (Some(hash), Some(explorer)),
-        None => (None, None),
-    };
-
-    GaslessSwapOutput {
-        chain: chain_info.display_name.to_string(),
-        sell_token: sell.token_info(),
-        buy_token: buy.token_info(),
-        sell_amount: sell.amount(&quote.sell_amount),
-        buy_amount: buy.amount(&quote.buy_amount),
-        min_buy_amount: buy.amount(&quote.min_buy_amount),
-        trade_hash,
-        status: status.to_string(),
-        tx_hash,
-        explorer_url,
-        terminal,
-        successful,
-        dry_run,
-    }
-}
-
 /// Sign EIP-712 typed data and split the signature.
-fn sign_eip712(
+pub(super) fn sign_eip712(
     signer: &PrivateKeySigner,
     eip712_json: &serde_json::Value,
 ) -> Result<SignatureSplit, CliError> {
@@ -536,7 +185,7 @@ fn validate_approval_domain(
 /// code doesn't yet support non-Permit2 trades but we don't want to fail
 /// hard if the API evolves; the type-specific permitted check below
 /// covers the actual binding.
-fn validate_trade_domain(
+pub(super) fn validate_trade_domain(
     eip712: &serde_json::Value,
     signable_type: &str,
     chain_id: u64,
@@ -574,7 +223,7 @@ const ERC20_APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
 /// `message.permitted.{token, amount}` fields must match the quote so the
 /// trade can't be silently rebound to a different token/amount before
 /// signature. Fails closed: missing fields → refuse.
-fn validate_trade_permitted(
+pub(super) fn validate_trade_permitted(
     eip712: &serde_json::Value,
     expected_token: &str,
     expected_amount: &str,
@@ -646,7 +295,7 @@ fn validate_trade_permitted(
 /// validator based on `signable_type`. Unknown types refuse fail-closed
 /// per the user's policy: a future API addition shouldn't be silently
 /// signed by an older CLI.
-fn validate_approval(
+pub(super) fn validate_approval(
     signable_type: &str,
     eip712: &serde_json::Value,
     sell_token: &str,
@@ -950,34 +599,6 @@ fn amount_too_small_err(payload_kind: &str, field: &str, got: U256, expected: U2
             "A short permit would let the relayer pull less than you intended to sell. Contact 0x support.".into(),
         ),
     }
-}
-
-/// Poll gasless status until terminal state. ~5 min total, 5 s interval.
-async fn poll_gasless_status(
-    client: &ApiClient,
-    trade_hash: &str,
-    chain_id: u64,
-    spinner: Option<&indicatif::ProgressBar>,
-) -> Result<crate::api::gasless::GaslessStatusResponse, CliError> {
-    crate::api::poll::poll_until_terminal(
-        // 10-minute total budget — gasless relayers normally land within
-        // 30s but congested L2 windows or paused operator queues can take
-        // several minutes; 5 minutes was too tight in practice.
-        crate::api::poll::PollConfig::new(5, 600, ErrorCode::TransactionTimeout),
-        |elapsed, s: &crate::api::gasless::GaslessStatusResponse| {
-            if let Some(sp) = spinner {
-                sp.set_message(format!("Status: {} ({}s elapsed)", s.status, elapsed));
-            }
-        },
-        || client.get_gasless_status(trade_hash, chain_id),
-        |s| s.is_terminal(),
-        || {
-            format!(
-                "Gasless trade not confirmed after 300s. Check with: 0x status {trade_hash} --type gasless --chain {chain_id}"
-            )
-        },
-    )
-    .await
 }
 
 #[cfg(test)]

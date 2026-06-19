@@ -69,6 +69,7 @@ hex = "0.4"
 bs58 = "0.5"
 bincode = "1"
 chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
 
 # OS keyring for wallet secrets
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

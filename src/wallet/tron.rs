@@ -40,15 +40,14 @@ fn derive_address(signing_key: &SigningKey) -> String {
     crate::chain::tron::addr21_to_base58check(&addr21)
 }
 
-/// Load a Tron signer from CLI flag, env var, or OS keyring.
+/// Load a Tron signer from CLI flag, env var, OS keyring, or config file.
 ///
-/// Priority: `--wallet` flag → `ZEROX_TRON_PRIVATE_KEY` env → OS keyring.
-/// (Config-file fallback is wired in once `AppConfig.wallet.tron` exists.)
+/// Priority: `--wallet` flag → `ZEROX_TRON_PRIVATE_KEY` env → OS keyring →
+/// `config.wallet.tron` (config-file plaintext).
 pub fn load_tron_signer(
     config: &AppConfig,
     cli_wallet: Option<&str>,
 ) -> Result<TronSigner, CliError> {
-    let _ = config; // config-field fallback added in the config task
     let key = if let Some(wallet_arg) = cli_wallet {
         wallet_arg.to_string()
     } else if let Ok(env_key) = std::env::var("ZEROX_TRON_PRIVATE_KEY") {
@@ -58,6 +57,8 @@ pub fn load_tron_signer(
             .unwrap_or(None)
     {
         keyring_key
+    } else if let Some(ref config_key) = config.wallet.tron {
+        config_key.clone()
     } else {
         return Err(CliError::Wallet {
             code: ErrorCode::WalletNotFound,
@@ -105,5 +106,19 @@ mod tests {
     #[test]
     fn test_no_wallet_errors() {
         assert!(load_tron_signer(&AppConfig::default(), None).is_err());
+    }
+
+    #[test]
+    fn test_config_file_fallback() {
+        use crate::config::types::WalletConfig;
+        let config = AppConfig {
+            wallet: WalletConfig {
+                tron: Some(PK.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let signer = load_tron_signer(&config, None).unwrap();
+        assert_eq!(signer.address(), "TYBNgWfhGuNzdLtjKtxXTfskAhTbMcqbaG");
     }
 }

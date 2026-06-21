@@ -417,6 +417,12 @@ pub fn set_config_value(
             plaintext,
             |v| config.wallet.evm = v,
         ),
+        "wallet.tron" => set_wallet_secret(
+            crate::wallet::keyring_store::keys::WALLET_TRON,
+            value,
+            plaintext,
+            |v| config.wallet.tron = v,
+        ),
         "wallet.solana" => {
             // File paths are not secret — keep them in the config file.
             if crate::config::types::is_path_like(value) {
@@ -568,6 +574,10 @@ pub fn unset_config_value(config: &mut AppConfig, key: &str) -> Result<bool, Cli
             changed |= config.wallet.evm.take().is_some();
             changed |= unset_keyring(crate::wallet::keyring_store::keys::WALLET_EVM);
         }
+        "wallet.tron" => {
+            changed |= config.wallet.tron.take().is_some();
+            changed |= unset_keyring(crate::wallet::keyring_store::keys::WALLET_TRON);
+        }
         "wallet.solana" => {
             changed |= config.wallet.solana.take().is_some();
             changed |= unset_keyring(crate::wallet::keyring_store::keys::WALLET_SOLANA);
@@ -645,6 +655,13 @@ pub fn get_config_value(config: &AppConfig, key: &str) -> Result<String, CliErro
         "wallet.evm" => match config.wallet.evm {
             Some(_) => Some("***redacted***".to_string()),
             None if keyring_has(crate::wallet::keyring_store::keys::WALLET_EVM) => {
+                Some("<stored in keyring>".to_string())
+            }
+            None => None,
+        },
+        "wallet.tron" => match config.wallet.tron {
+            Some(_) => Some("***redacted***".to_string()),
+            None if keyring_has(crate::wallet::keyring_store::keys::WALLET_TRON) => {
                 Some("<stored in keyring>".to_string())
             }
             None => None,
@@ -959,6 +976,20 @@ mod tests {
         .unwrap();
         assert!(matches!(storage, SecretStorage::Config));
         assert!(config.wallet.evm.is_some());
+    }
+
+    #[test]
+    fn test_set_get_unset_wallet_tron_plaintext() {
+        let mut config = AppConfig::default();
+        // --plaintext path keeps it in the config file (no keyring dependency in tests).
+        set_config_value(&mut config, "wallet.tron", "0xdeadbeef", true).unwrap();
+        assert_eq!(config.wallet.tron.as_deref(), Some("0xdeadbeef"));
+        assert_eq!(
+            get_config_value(&config, "wallet.tron").unwrap(),
+            "***redacted***"
+        );
+        unset_config_value(&mut config, "wallet.tron").unwrap();
+        assert!(config.wallet.tron.is_none());
     }
 
     #[test]

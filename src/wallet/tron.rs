@@ -89,10 +89,9 @@ mod tests {
     #[test]
     fn test_load_and_derive_address() {
         let signer = load_tron_signer(&AppConfig::default(), Some(PK)).unwrap();
-        // Tron address derived from this key — a stable, recomputed vector.
-        // (Address derivation: 0x41 ++ keccak256(pubkey[1..])[12..], base58check.)
-        assert!(signer.address().starts_with('T'));
-        assert_eq!(signer.address().len(), 34);
+        // Known vector: Hardhat #0 key → EVM 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+        // → Tron base58check(0x41 ‖ those 20 bytes), computed independently.
+        assert_eq!(signer.address(), "TYBNgWfhGuNzdLtjKtxXTfskAhTbMcqbaG");
     }
 
     #[test]

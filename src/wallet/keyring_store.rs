@@ -16,6 +16,7 @@ use crate::error::CliError;
 pub mod keys {
     pub const WALLET_EVM: &str = "wallet.evm";
     pub const WALLET_SOLANA: &str = "wallet.solana";
+    pub const WALLET_TRON: &str = "wallet.tron";
 }
 
 #[cfg(not(test))]

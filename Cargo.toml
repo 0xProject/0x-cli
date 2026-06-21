@@ -76,6 +76,7 @@ bs58 = "0.5"
 bincode = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 
 # OS keyring for wallet secrets.
 # Linux uses the pure-Rust Secret Service backend (zbus + RustCrypto) rather

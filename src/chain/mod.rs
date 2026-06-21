@@ -1,6 +1,7 @@
 pub mod evm;
 pub mod retry;
 pub mod solana;
+pub mod tron;
 
 use crate::error::CliError;
 use crate::output::human::DataTable;

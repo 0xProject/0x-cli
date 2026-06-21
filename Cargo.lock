@@ -9232,6 +9232,7 @@ dependencies = [
  "reqwest-retry",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "solana-client",
  "solana-sdk",
  "tempfile",

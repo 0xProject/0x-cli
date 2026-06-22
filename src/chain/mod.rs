@@ -403,18 +403,16 @@ pub fn validate_token_address(token: &str, chain_info: &ChainInfo) -> Result<(),
                 ),
             });
         }
-    } else if chain_info.is_tron() {
-        if !crate::chain::tron::is_valid_tron_address(token) {
-            return Err(CliError::Api {
-                code: crate::error::ErrorCode::InputInvalid,
-                message: format!("'{token}' is not a valid Tron token address"),
-                status: None,
-                details: None,
-                suggestion: Some(
-                    "Use the base58check TRC20 address, e.g. TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t for USDT on Tron".into(),
-                ),
-            });
-        }
+    } else if chain_info.is_tron() && !crate::chain::tron::is_valid_tron_address(token) {
+        return Err(CliError::Api {
+            code: crate::error::ErrorCode::InputInvalid,
+            message: format!("'{token}' is not a valid Tron token address"),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "Use the base58check TRC20 address, e.g. TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t for USDT on Tron".into(),
+            ),
+        });
     }
     Ok(())
 }

@@ -228,7 +228,7 @@ pub async fn build_sign_broadcast(
     });
 
     let id = txid(&raw);
-    let signature = signer.sign_txid(&id);
+    let signature = signer.sign_txid(&id)?;
 
     // Full signed Transaction protobuf: field 1 = raw_data, field 2 = signature.
     let mut signed = Vec::new();

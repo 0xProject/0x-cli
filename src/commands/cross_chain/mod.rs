@@ -347,7 +347,16 @@ pub async fn run(
         })?;
         let data = details.data.as_deref().unwrap_or_default();
         let owner = details.owner_address.as_deref().unwrap_or(&origin_address);
-        let value_sun: u64 = details.value.as_deref().unwrap_or("0").parse().unwrap_or(0);
+        let value_sun: u64 = match details.value.as_deref() {
+            None => 0,
+            Some(v) => v.parse().map_err(|_| CliError::Api {
+                code: ErrorCode::ApiError,
+                message: format!("Tron quote returned a non-numeric value: '{v}'"),
+                status: None,
+                details: None,
+                suggestion: None,
+            })?,
+        };
 
         let rpc = config::resolve_rpc(global.rpc_url.as_deref(), &config, origin)?;
         spinner.set_message("Building and broadcasting Tron transaction...".to_string());

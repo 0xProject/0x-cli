@@ -16,15 +16,18 @@ impl TronSigner {
 
     /// Sign a 32-byte Tron txID, returning a 65-byte `r ‖ s ‖ recovery_id`
     /// signature (recovery id is 0/1, NOT the EVM 27/28 convention).
-    pub fn sign_txid(&self, txid: &[u8; 32]) -> [u8; 65] {
+    pub fn sign_txid(&self, txid: &[u8; 32]) -> Result<[u8; 65], CliError> {
         let (sig, recid) = self
             .signing_key
             .sign_prehash_recoverable(txid)
-            .expect("signing a 32-byte prehash cannot fail");
+            .map_err(|e| CliError::Wallet {
+                code: ErrorCode::WalletInvalid,
+                message: format!("Failed to sign Tron transaction: {e}"),
+            })?;
         let mut out = [0u8; 65];
         out[..64].copy_from_slice(&sig.to_bytes());
         out[64] = recid.to_byte();
-        out
+        Ok(out)
     }
 }
 
@@ -98,7 +101,7 @@ mod tests {
     #[test]
     fn test_sign_txid_is_65_bytes() {
         let signer = load_tron_signer(&AppConfig::default(), Some(PK)).unwrap();
-        let sig = signer.sign_txid(&[7u8; 32]);
+        let sig = signer.sign_txid(&[7u8; 32]).unwrap();
         assert_eq!(sig.len(), 65);
         assert!(sig[64] == 0 || sig[64] == 1, "recovery id must be 0 or 1");
     }

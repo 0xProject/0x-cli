@@ -22,6 +22,13 @@ on:
 permissions:
   contents: write # create the release and upload assets
 
+# Disable HTTP/2 multiplexing for cargo's crates.io fetches — works around the
+# intermittent "Error in the HTTP2 framing layer" curl failures on macOS
+# runners — and retry transient network errors.
+env:
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+
 jobs:
   build:
     name: ${{ matrix.target }}
@@ -55,6 +62,20 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      # Vendored OpenSSL (pulled in transitively by solana-sdk) builds from
+      # source. On Windows that needs NASM and a full Perl — the runner ships
+      # both, but the build runs under Git-Bash whose stripped-down Perl can't
+      # run OpenSSL's Configure, so point the build at the preinstalled
+      # Strawberry Perl explicitly.
+      - name: Set up NASM (Windows, for vendored OpenSSL)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Use Strawberry Perl for OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl.exe" >> "$GITHUB_ENV"
 
       - name: Build release binary
         shell: bash

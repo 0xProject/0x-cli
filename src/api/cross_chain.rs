@@ -70,6 +70,9 @@ pub struct CrossChainTxDetails {
 
     // SVM fields
     pub serialized_transaction: Option<String>,
+
+    // TVM (Tron) field
+    pub owner_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

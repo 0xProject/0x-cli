@@ -49,6 +49,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # The `keyring` crate's Linux backend (sync-secret-service) links libdbus
+      # via pkg-config; the runner image doesn't ship the headers.
+      - name: Install Linux build deps (D-Bus for keyring)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:

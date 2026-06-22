@@ -121,6 +121,23 @@ impl ChainInfo {
             ChainId::Tron => "tron".to_string(),
         }
     }
+
+    /// Error returned when a Tron chain is used on a command that only the
+    /// cross-chain API supports (swap/price/gasless).
+    pub fn reject_if_tron(&self, command: &str) -> Result<(), CliError> {
+        if self.is_tron() {
+            return Err(CliError::Api {
+                code: crate::error::ErrorCode::InputInvalid,
+                message: format!("Tron is not supported by '{command}'"),
+                status: None,
+                details: None,
+                suggestion: Some(
+                    "Tron is supported for bridging only — use '0x cross-chain --from/--to tron'".into(),
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Static chain registry. `default_rpc_url` is the built-in public RPC

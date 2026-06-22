@@ -205,6 +205,7 @@ pub async fn run(
 ) -> Result<i32, CliError> {
     let config = config::load_config()?;
     let chain_info = chain::resolve_chain(&args.chain)?;
+    chain_info.reject_if_tron("swap")?;
 
     chain::validate_token_address(&args.sell, chain_info)?;
     chain::validate_token_address(&args.buy, chain_info)?;

@@ -635,3 +635,17 @@ fn test_dry_run_flag_accepted() {
     // reached the wallet-load step without an arg-parse failure.
     assert_eq!(json["code"], "WALLET_NOT_FOUND");
 }
+
+#[test]
+fn swap_rejects_tron_with_cross_chain_hint() {
+    let mut cmd = assert_cmd::Command::cargo_bin("0x").unwrap();
+    cmd.args([
+        "swap", "--chain", "tron",
+        "--sell", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "--buy", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "--amount", "1000000", "-o", "json-envelope",
+    ]);
+    let out = cmd.output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cross-chain"), "expected cross-chain hint, got: {stdout}");
+}

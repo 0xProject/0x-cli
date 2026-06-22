@@ -23,7 +23,7 @@ cargo install --path .
 ## Features
 
 - **4 APIs**: EVM Swap (Allowance Holder), Gasless Swap, Solana Swap, Cross-Chain
-- **20 chains**: Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Linea, Scroll, Blast, Mantle, Berachain, Sonic, Unichain, World Chain, Abstract, Ink, Monad, HyperEVM, Solana
+- **21 chains**: Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Linea, Scroll, Blast, Mantle, Berachain, Sonic, Unichain, World Chain, Abstract, Ink, Monad, HyperEVM, Solana, Tron
 - **Agent-first**: Auto-detect non-TTY for JSON output, structured error codes, stable exit codes, inline `RESPONSE:` schemas in every `--help`
 - **Safe by default**: OS keyring for wallet secrets, transaction simulation before every execution, `--dry-run` mode, exact token approvals
 - **Rich UX**: Colored tables, progress spinners, interactive confirmation, shell completions
@@ -118,6 +118,9 @@ By default, `wallet.evm` and `wallet.solana` (when given key material rather tha
 | `0x config set wallet.solana /path/to/file.json` | `~/.0x-config/config.toml` (it's a path) |
 | `0x config set wallet.solana <base58>` | OS keyring |
 | `ZEROX_EVM_PRIVATE_KEY` / `ZEROX_SOLANA_KEYPAIR` env var | Read directly, never persisted |
+| `0x config set wallet.tron <hex-key>` | OS keyring |
+| `0x config set wallet.tron <hex-key> --plaintext` | `~/.0x-config/config.toml` |
+| `ZEROX_TRON_PRIVATE_KEY` env var | Read directly, never persisted |
 
 `0x config show` reports keyring-stored wallets as `<stored in keyring>`. If the OS keyring is unavailable (e.g. headless Linux with no DBus), use `--plaintext` or the env vars.
 
@@ -232,6 +235,8 @@ No gas fees required. The 0x protocol handles gas on your behalf.
 ```
 
 ### Cross-Chain Swap
+
+> **Note:** Tron is supported for bridging only — it is not available in `swap`, `price`, or `gasless`. Use `--from tron` or `--to tron` with `cross-chain`.
 
 ```bash
 # Interactive (shows quote table, lets you pick)
@@ -440,6 +445,7 @@ Every interactive prompt has a flag equivalent:
 | 81457 | blast | Blast | ETH |
 | 534352 | scroll | Scroll | ETH |
 | solana | solana | Solana | SOL |
+| tron | tron | Tron | TRX |
 
 ## Security
 

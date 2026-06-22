@@ -1,6 +1,8 @@
 # Cross-chain swaps (bridging)
 
-Swap a token on one chain for a token on another in a single command. Supports EVM↔EVM, EVM↔Solana. The CLI fetches multiple bridge quotes, executes the origin-chain transaction, and can track the bridge until funds land on the destination.
+Swap a token on one chain for a token on another in a single command. Supports EVM↔EVM, EVM↔Solana, and EVM↔Tron. The CLI fetches multiple bridge quotes, executes the origin-chain transaction, and can track the bridge until funds land on the destination.
+
+**Tron:** Tron addresses are base58check (`T…`). A Tron wallet (`wallet.tron` / `ZEROX_TRON_PRIVATE_KEY`) is required to bridge from or to Tron. Tron is bridging-only — it is not available in `swap`, `price`, or `gasless`.
 
 ## Quote + execute
 

@@ -1,0 +1,106 @@
+name: Release
+
+# Cuts a cross-platform release. Push a version tag (e.g. `v0.1.0`) and this
+# builds the `0x` binary for five targets, attaches them to a GitHub Release,
+# and leaves it as a **draft** for you to review and publish.
+#
+# The Amplitude telemetry key is injected here from the `ZEROEX_AMPLITUDE_API_KEY`
+# repo secret via `option_env!` at compile time — so only released binaries can
+# send telemetry; source builds never have a key. If the secret is unset, the
+# build still succeeds and telemetry stays inert.
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual dry-runs: build the artifacts without pushing a real tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag/name for the draft release (e.g. v0.0.0-test)"
+        required: true
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 → glibc 2.35, broad compatibility with older distros.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        shell: bash
+        env:
+          # Compiled into the binary via option_env!. Absent secret → inert build.
+          ZEROEX_AMPLITUDE_API_KEY: ${{ secrets.ZEROEX_AMPLITUDE_API_KEY }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=0x
+          name="0x-${{ matrix.target }}"
+          mkdir "$name"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/$bin.exe" "$name/"
+          else
+            cp "target/${{ matrix.target }}/release/$bin" "$name/"
+          fi
+          # Bundle docs when present (LICENSE may not exist yet — don't fail).
+          cp README.md "$name/" 2>/dev/null || true
+          cp LICENSE* "$name/" 2>/dev/null || true
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            asset="$name.zip"
+            7z a "$asset" "$name" >/dev/null
+          else
+            asset="$name.tar.gz"
+            tar czf "$asset" "$name"
+          fi
+
+          # Checksum (shasum on macOS, sha256sum elsewhere incl. git-bash).
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          draft: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.package.outputs.asset }}
+            ${{ steps.package.outputs.asset }}.sha256

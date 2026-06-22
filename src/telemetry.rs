@@ -26,9 +26,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Amplitude project key, compiled in at release-build time via the
-/// `ZEROX_AMPLITUDE_API_KEY` build env var. `None` in any build that didn't
+/// `ZEROEX_AMPLITUDE_API_KEY` build env var. `None` in any build that didn't
 /// set it (all dev/CI/test builds) → telemetry is fully inert.
-const AMPLITUDE_API_KEY: Option<&str> = option_env!("ZEROX_AMPLITUDE_API_KEY");
+const AMPLITUDE_API_KEY: Option<&str> = option_env!("ZEROEX_AMPLITUDE_API_KEY");
 
 const DEFAULT_AMPLITUDE_URL: &str = "https://api2.amplitude.com/2/httpapi";
 const EVENT_TYPE: &str = "cli_command";
@@ -273,7 +273,7 @@ fn build_event_line(inner: &Inner, event: CommandEvent) -> Option<String> {
 fn amplitude_url() -> String {
     // Internal/testing override (point at a mock or unroutable host). Not
     // documented publicly.
-    std::env::var("ZEROX_AMPLITUDE_URL").unwrap_or_else(|_| DEFAULT_AMPLITUDE_URL.to_string())
+    std::env::var("ZEROEX_AMPLITUDE_URL").unwrap_or_else(|_| DEFAULT_AMPLITUDE_URL.to_string())
 }
 
 fn print_first_run_notice() {

@@ -643,7 +643,7 @@ fn chains_list_includes_tron() {
     let out = cmd.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("\"tron\""), "chains output should list tron: {stdout}");
-    assert!(stdout.contains("tvm"), "chains output should show tvm chain_type: {stdout}");
+    assert!(stdout.contains("\"tvm\""), "chains output should show tvm chain_type: {stdout}");
 }
 
 #[test]

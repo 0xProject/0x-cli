@@ -133,6 +133,7 @@ Environment variables always take precedence over config file values.
 | `ZEROX_API_KEY` | 0x API key |
 | `ZEROX_EVM_PRIVATE_KEY` | EVM private key (hex) |
 | `ZEROX_SOLANA_KEYPAIR` | Solana keypair file path or base58 |
+| `ZEROX_TRON_PRIVATE_KEY` | Tron private key (hex) |
 | `ZEROX_DEFAULT_CHAIN` | Default chain name or ID |
 | `ZEROX_RPC_URL` | Override RPC URL for any chain |
 | `ZEROX_TELEMETRY` | Set falsy (`0`/`false`/`off`) to disable usage telemetry |
@@ -453,7 +454,7 @@ Every interactive prompt has a flag equivalent:
 - **Config file**: Created with `0600` permissions (owner read/write only)
 - **Config directory**: Created with `0700` permissions
 - **Redaction**: `0x config show` and `0x config get` never reveal secret material. Wallets stored in the keyring show as `<stored in keyring>`; plaintext wallets show as `***redacted***`; Solana file paths show verbatim because the path itself isn't sensitive.
-- **Transaction simulation**: Every transaction is simulated via `eth_call` (EVM) or `simulate_transaction` (Solana) before submission
+- **Transaction simulation**: EVM and Solana transactions are simulated via `eth_call` or `simulate_transaction` before submission. Tron cross-chain transactions are not pre-simulated.
 - **Approval strategy**: Default is `exact` (only approve the needed amount). Use `--approval unlimited` for max approval.
 - **Environment variables**: Sensitive values like private keys can be set via env vars (`ZEROX_EVM_PRIVATE_KEY`, `ZEROX_SOLANA_KEYPAIR`) to avoid persisting them at all — read-once, never written to disk or keyring.
 

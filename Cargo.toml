@@ -53,6 +53,11 @@ alloy-dyn-abi = { version = "1", features = ["eip712"] }
 # Solana
 solana-sdk = "2"
 solana-client = "2"
+# Not used directly: solana-sdk's secp256r1 precompile pulls in the `openssl`
+# crate. Depending on it here with `vendored` forces OpenSSL to build from
+# bundled source across the whole graph, so the binary needs no system OpenSSL
+# at build or runtime on any platform (notably Windows, whose runner has none).
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Error handling
 thiserror = "2"
@@ -72,8 +77,19 @@ bincode = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 
-# OS keyring for wallet secrets
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# OS keyring for wallet secrets.
+# Linux uses the pure-Rust Secret Service backend (zbus + RustCrypto) rather
+# than `sync-secret-service`, which would link the system `libdbus` C library —
+# this keeps the build and the shipped binary free of any system dependency.
+# `async-io` runs zbus on its own executor so the (sync) keyring calls don't
+# nest a runtime inside our tokio main.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "async-io",
+] }
 
 [dev-dependencies]
 assert_cmd = "2"

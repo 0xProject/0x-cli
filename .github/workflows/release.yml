@@ -35,10 +35,12 @@ jobs:
             os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
+          # macos-15-intel is the last supported x86_64 macOS image (macos-13
+          # is being retired); macos-15 is Apple Silicon.
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
@@ -48,12 +50,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      # The `keyring` crate's Linux backend (sync-secret-service) links libdbus
-      # via pkg-config; the runner image doesn't ship the headers.
-      - name: Install Linux build deps (D-Bus for keyring)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

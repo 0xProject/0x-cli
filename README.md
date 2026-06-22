@@ -30,9 +30,35 @@ cargo install --path .
 
 ## Installation
 
+### Prebuilt binary (recommended)
+
+One command installs the latest release for macOS or Linux (x86_64 and arm64). It
+downloads the binary from GitHub Releases, verifies its SHA-256 checksum, and drops
+it in `~/.local/bin`:
+
 ```bash
-# From source (requires Rust 1.75+)
-git clone <repo> && cd 0x-cli
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli-playground/main/scripts/install.sh | sh
+```
+
+Pin a specific version or change the install directory:
+
+```bash
+# Install a specific version
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli-playground/main/scripts/install.sh | ZEROX_VERSION=v0.1.0 sh
+
+# Install somewhere on your PATH
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli-playground/main/scripts/install.sh | ZEROX_BIN_DIR=/usr/local/bin sh
+```
+
+On **Windows**, download the `.zip` for `x86_64-pc-windows-msvc` from the
+[latest release](https://github.com/0xProject/0x-cli-playground/releases/latest)
+and put `0x.exe` on your PATH.
+
+### From source
+
+```bash
+# Requires Rust 1.75+
+git clone https://github.com/0xProject/0x-cli-playground && cd 0x-cli-playground
 cargo install --path .
 
 # Verify

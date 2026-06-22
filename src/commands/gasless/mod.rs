@@ -44,10 +44,12 @@ pub async fn run_gasless(
     let mut metadata = Metadata::for_chain(chain_info);
     let client = crate::api::client_for(global, &config, output)?;
 
-    // Step 1: Get gasless quote
+    // Step 1: Get gasless quote. Gasless is exact-in only; the swap dispatcher
+    // rejects --buy-amount before we get here, so this is the sell amount.
+    let amount_spec = args.amount_spec();
     let spinner = output.spinner_guard("Fetching gasless quote...");
     let quote = client
-        .get_gasless_quote(chain_id, &args.sell, &args.buy, &args.amount, &taker)
+        .get_gasless_quote(chain_id, &args.sell, &args.buy, amount_spec.value(), &taker)
         .await?;
     drop(spinner);
 

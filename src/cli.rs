@@ -126,7 +126,7 @@ pub enum Commands {
             This is a read-only operation — no wallet or gas is needed. Use it to\n\
             check rates before executing a swap.",
         after_help = "EXAMPLES:\n\
-            \x20   # Price check: 1 USDC → WETH on Base (USDC has 6 decimals: 1000000 = 1 USDC)\n\
+            \x20   # Price check on Base (tokens are contract addresses; amounts are base units)\n\
             \x20   0x price --chain base \\\n\
             \x20     --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \\\n\
             \x20     --buy 0x4200000000000000000000000000000000000006 --amount 1000000\n\n\
@@ -134,10 +134,9 @@ pub enum Commands {
             \x20   0x price --chain base \\\n\
             \x20     --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \\\n\
             \x20     --buy 0x4200000000000000000000000000000000000006 --amount 1000000 -o json\n\n\
-            \x20   BASE UNIT REFERENCE:\n\
-            \x20     USDC (6 decimals):  1 USDC  = 1000000\n\
-            \x20     WETH (18 decimals): 1 WETH  = 1000000000000000000\n\
-            \x20     USDT (6 decimals):  1 USDT  = 1000000\n\n\
+            \x20   BASE UNITS (the token's smallest unit, no decimals applied):\n\
+            \x20     6-decimal token:   1.0 = 1000000\n\
+            \x20     18-decimal token:  1.0 = 1000000000000000000\n\n\
             RESPONSE (data field):\n\
             \x20   chain                 string  Display name of the chain\n\
             \x20   sell_token            object  {address, symbol?, decimals?}\n\
@@ -160,11 +159,11 @@ pub enum Commands {
             handle token approvals, sign and submit the transaction, then\n\
             wait for confirmation.",
         after_help = "EXAMPLES:\n\
-            \x20   # Swap 1 USDC for WETH on Base (1 USDC = 1000000 base units)\n\
+            \x20   # Swap on Base (tokens are contract addresses; amounts are base units)\n\
             \x20   0x swap --chain base \\\n\
             \x20     --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \\\n\
             \x20     --buy 0x4200000000000000000000000000000000000006 --amount 1000000\n\n\
-            \x20   # Solana swap: 1 SOL for USDC (1 SOL = 1000000000 lamports)\n\
+            \x20   # Solana swap (tokens are base58 mints; amounts are base units / lamports)\n\
             \x20   0x swap --chain solana \\\n\
             \x20     --sell So11111111111111111111111111111111111111112 \\\n\
             \x20     --buy EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v --amount 1000000000\n\n\
@@ -202,7 +201,7 @@ pub enum Commands {
             handles approvals, executes the origin transaction, and tracks\n\
             the bridge status until completion.",
         after_help = "EXAMPLES:\n\
-            \x20   # Bridge 1 USDC from Base to Arbitrum\n\
+            \x20   # Bridge from Base to Arbitrum (tokens are contract addresses; amounts are base units)\n\
             \x20   0x cross-chain --from base --to arbitrum \\\n\
             \x20     --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \\\n\
             \x20     --buy 0xaf88d065e77c8cC2239327C5EDb3A432268e5831 --amount 1000000\n\n\
@@ -507,6 +506,7 @@ impl OutputFormat {
 }
 
 #[derive(Parser, Debug)]
+#[command(group(clap::ArgGroup::new("price_amount").required(true).args(["amount", "buy_amount"])))]
 pub struct PriceArgs {
     /// Chain ID or name (e.g. base, 8453, ethereum, solana)
     #[arg(short = 'c', long, env = "ZEROX_DEFAULT_CHAIN")]
@@ -520,16 +520,39 @@ pub struct PriceArgs {
     #[arg(long)]
     pub buy: String,
 
-    /// Amount to sell in base units (e.g. 1000000 = 1 USDC, 1000000000000000000 = 1 ETH)
+    /// Exact amount to SELL in base units (exact-in): the token's smallest
+    /// unit, no decimals applied — a 6-decimal token uses 1000000 = 1.0, an
+    /// 18-decimal token uses 1000000000000000000 = 1.0. Mutually exclusive
+    /// with --buy-amount.
     #[arg(long)]
-    pub amount: String,
+    pub amount: Option<String>,
+
+    /// Exact amount to BUY in base units (exact-out): price how much you'd
+    /// spend to receive this. EVM same-chain only — not Solana or gasless.
+    /// Mutually exclusive with --amount.
+    #[arg(long)]
+    pub buy_amount: Option<String>,
 
     /// Use gasless pricing
     #[arg(long)]
     pub gasless: bool,
 }
 
+impl PriceArgs {
+    /// Which side the caller pinned. The clap arg-group guarantees exactly one
+    /// of `--amount` / `--buy-amount` is set.
+    pub fn amount_spec(&self) -> crate::api::types::AmountSpec {
+        use crate::api::types::AmountSpec;
+        match (&self.amount, &self.buy_amount) {
+            (Some(a), None) => AmountSpec::ExactIn(a.clone()),
+            (None, Some(b)) => AmountSpec::ExactOut(b.clone()),
+            _ => unreachable!("clap requires exactly one of --amount / --buy-amount"),
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
+#[command(group(clap::ArgGroup::new("swap_amount").required(true).args(["amount", "buy_amount"])))]
 pub struct SwapArgs {
     /// Chain ID or name (e.g. base, 8453, ethereum, solana)
     #[arg(short = 'c', long, env = "ZEROX_DEFAULT_CHAIN")]
@@ -543,9 +566,18 @@ pub struct SwapArgs {
     #[arg(long)]
     pub buy: String,
 
-    /// Amount to sell in base units (e.g. 1000000 = 1 USDC, 1000000000000000000 = 1 ETH)
+    /// Exact amount to SELL in base units (exact-in): the token's smallest
+    /// unit, no decimals applied — a 6-decimal token uses 1000000 = 1.0, an
+    /// 18-decimal token uses 1000000000000000000 = 1.0. Mutually exclusive
+    /// with --buy-amount.
     #[arg(long)]
-    pub amount: String,
+    pub amount: Option<String>,
+
+    /// Exact amount to BUY in base units (exact-out): spend whatever it takes
+    /// to receive this. EVM same-chain only — not Solana or gasless. Mutually
+    /// exclusive with --amount.
+    #[arg(long)]
+    pub buy_amount: Option<String>,
 
     /// Slippage tolerance in basis points (100 = 1%, max 10000 = 100%)
     #[arg(long, default_value = "100", value_parser = clap::value_parser!(u32).range(0..=10000))]
@@ -562,6 +594,19 @@ pub struct SwapArgs {
     /// Token approval strategy (EVM only — warns and is ignored on Solana)
     #[arg(long, value_enum, default_value = "exact")]
     pub approval: ApprovalStrategy,
+}
+
+impl SwapArgs {
+    /// Which side the caller pinned. The clap arg-group guarantees exactly one
+    /// of `--amount` / `--buy-amount` is set.
+    pub fn amount_spec(&self) -> crate::api::types::AmountSpec {
+        use crate::api::types::AmountSpec;
+        match (&self.amount, &self.buy_amount) {
+            (Some(a), None) => AmountSpec::ExactIn(a.clone()),
+            (None, Some(b)) => AmountSpec::ExactOut(b.clone()),
+            _ => unreachable!("clap requires exactly one of --amount / --buy-amount"),
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -582,7 +627,8 @@ pub struct CrossChainArgs {
     #[arg(long)]
     pub buy: String,
 
-    /// Amount to sell in base units (e.g. 1000000 = 1 USDC, 1000000000000000000 = 1 ETH)
+    /// Amount to sell in base units: the token's smallest unit, no decimals
+    /// applied (a 6-decimal token uses 1000000 = 1.0)
     #[arg(long)]
     pub amount: String,
 

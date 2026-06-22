@@ -377,7 +377,9 @@ pub fn validate_base_unit_amount(amount: &str) -> Result<(), CliError> {
             status: None,
             details: None,
             suggestion: Some(
-                "Pass the amount in base units as a positive integer, e.g. 1000000 = 1 USDC (6 decimals), 1000000000000000000 = 1 ETH (18 decimals)".into(),
+                "Pass the amount in base units as a positive integer — the token's \
+                 smallest unit, no decimals applied: a 6-decimal token uses 1000000 = 1.0, \
+                 an 18-decimal token uses 1000000000000000000 = 1.0".into(),
             ),
         });
     }

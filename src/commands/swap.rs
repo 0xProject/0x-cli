@@ -30,7 +30,16 @@ pub struct SwapOutput {
     /// the destination credit). Falls back to `buy_amount` when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub buy_amount_settled: Option<TokenAmount>,
+    /// Exact-in: minimum buy after slippage. Exact-out: equals `buy_amount`
+    /// (the buy side is fixed); reason about worst-case cost via
+    /// `max_sell_amount`.
     pub min_buy_amount: TokenAmount,
+    /// Exact-out only: worst-case sell amount after slippage — the most the
+    /// swap can spend, and what the token approval covers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sell_amount: Option<TokenAmount>,
+    /// True when this executed an exact-out (buy-amount) request.
+    pub exact_out: bool,
     pub rate: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gas_used: Option<String>,
@@ -94,10 +103,12 @@ impl HumanDisplay for SwapOutput {
             .as_deref()
             .unwrap_or(&self.buy_token.address);
 
+        // Exact-out pins the buy side, so the sell figure is an estimate.
+        let sell_row_label = if self.exact_out { "Sell (est):" } else { "Sell:" };
         writeln!(
             writer,
             "  {:<12} {} {}",
-            "Sell:",
+            sell_row_label,
             self.sell_amount.display(),
             sell_label
         )?;
@@ -133,13 +144,28 @@ impl HumanDisplay for SwapOutput {
         }
 
         writeln!(writer, "  {:<12} {}", "Rate:", self.rate)?;
-        writeln!(
-            writer,
-            "  {:<12} {} {}",
-            "Min Buy:",
-            self.min_buy_amount.display(),
-            buy_label
-        )?;
+        // Exact-out guarantees the buy amount, so the meaningful bound is the
+        // worst-case sell (Max Sell) rather than Min Buy.
+        match (self.exact_out, &self.max_sell_amount) {
+            (true, Some(max_sell)) => {
+                writeln!(
+                    writer,
+                    "  {:<12} {} {}",
+                    "Max Sell:",
+                    max_sell.display(),
+                    sell_label
+                )?;
+            }
+            _ => {
+                writeln!(
+                    writer,
+                    "  {:<12} {} {}",
+                    "Min Buy:",
+                    self.min_buy_amount.display(),
+                    buy_label
+                )?;
+            }
+        }
 
         if !self.route.is_empty() {
             let route_str = self
@@ -182,9 +208,23 @@ pub async fn run(
 
     chain::validate_token_address(&args.sell, chain_info)?;
     chain::validate_token_address(&args.buy, chain_info)?;
-    chain::validate_base_unit_amount(&args.amount)?;
+
+    let amount_spec = args.amount_spec();
+    chain::validate_base_unit_amount(amount_spec.value())?;
     if let Some(ref recipient) = args.recipient {
         chain::validate_token_address(recipient, chain_info)?;
+    }
+
+    // Exact-out (--buy-amount) is Allowance-Holder-only. Reject it for the
+    // Solana and gasless paths before dispatching, so those code paths can
+    // safely treat the amount as the sell side.
+    if amount_spec.is_exact_out() {
+        if chain_info.is_solana() {
+            return Err(super::exact_out_unsupported("Solana swaps"));
+        }
+        if args.gasless {
+            return Err(super::exact_out_unsupported("gasless swaps"));
+        }
     }
 
     if chain_info.is_solana() {
@@ -221,7 +261,7 @@ async fn run_evm_swap(
             chain_id,
             &args.sell,
             &args.buy,
-            &args.amount,
+            &args.amount_spec(),
             &taker_address,
             Some(args.slippage),
             args.recipient.as_deref(),
@@ -267,11 +307,7 @@ async fn run_evm_swap(
         return Err(balance.to_error());
     }
 
-    let route = quote
-        .route
-        .as_ref()
-        .map(|r| r.sources())
-        .unwrap_or_default();
+    let route = quote.route_sources();
 
     let route_str = if route.is_empty() {
         "Direct".to_string()
@@ -289,14 +325,28 @@ async fn run_evm_swap(
             .join(" → ")
     };
 
-    let sell_display = crate::api::types::display_amount(&quote.sell_amount, sell.decimals);
+    let sell_display = crate::api::types::display_amount(quote.display_sell_amount(), sell.decimals);
     let buy_display = crate::api::types::display_amount(&quote.buy_amount, buy.decimals);
-    let min_buy_display = crate::api::types::display_amount(&quote.min_buy_amount, buy.decimals);
 
+    // Exact-out pins the buy side: show the sell as an estimate and surface the
+    // worst-case spend (Max Sell). Exact-in shows Min Buy after slippage.
+    let exact_out = quote.is_exact_out();
+    let sell_summary_label = if exact_out { "Sell (est)" } else { "Sell" };
     let mut summary = TradeSummary::new(format!("Swap on {}", chain_info.display_name))
-        .row("Sell", format!("{sell_display} {}", sell.label()))
-        .row("Buy", format!("{buy_display} {}", buy.label()))
-        .row("Min Buy", format!("{min_buy_display} {}", buy.label()))
+        .row(sell_summary_label, format!("{sell_display} {}", sell.label()))
+        .row("Buy", format!("{buy_display} {}", buy.label()));
+    summary = match (exact_out, quote.max_sell_amount()) {
+        (true, Some(max_sell)) => {
+            let max_sell_display = crate::api::types::display_amount(max_sell, sell.decimals);
+            summary.row("Max Sell", format!("{max_sell_display} {}", sell.label()))
+        }
+        _ => {
+            let min_buy_display =
+                crate::api::types::display_amount(quote.display_min_buy_amount(), buy.decimals);
+            summary.row("Min Buy", format!("{min_buy_display} {}", buy.label()))
+        }
+    };
+    summary = summary
         .row("Slippage", format!("{:.2}%", args.slippage as f64 / 100.0))
         .row("Route", route_str);
 
@@ -353,7 +403,9 @@ async fn run_evm_swap(
         signer,
         &args.sell,
         spender,
-        &quote.sell_amount,
+        // Exact-out can spend up to maxSellAmount; approve that, not the
+        // estimate, so the swap can't fail on allowance.
+        quote.approval_sell_amount(),
         args.approval,
         &tx.to,
         &tx.data,
@@ -404,7 +456,7 @@ fn build_swap_output(
         });
     }
 
-    let rate = compute_rate(&quote.sell_amount, &quote.buy_amount);
+    let rate = compute_rate(quote.display_sell_amount(), &quote.buy_amount);
 
     // Five things vary by execution mode: tx hash + receipt fields, the
     // dry_run flag, the needs_confirmation flag, AND the settled buy
@@ -439,10 +491,12 @@ fn build_swap_output(
         chain: chain_info.display_name.to_string(),
         sell_token: sell.token_info(),
         buy_token: buy.token_info(),
-        sell_amount: sell.amount(&quote.sell_amount),
+        sell_amount: sell.amount(quote.display_sell_amount()),
         buy_amount: buy.amount(&quote.buy_amount),
         buy_amount_settled: settled_buy,
-        min_buy_amount: buy.amount(&quote.min_buy_amount),
+        min_buy_amount: buy.amount(quote.display_min_buy_amount()),
+        max_sell_amount: quote.max_sell_amount().map(|m| sell.amount(m)),
+        exact_out: quote.is_exact_out(),
         rate,
         gas_used,
         effective_gas_price,

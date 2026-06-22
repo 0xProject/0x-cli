@@ -11,7 +11,7 @@ A single Rust binary, `0x`, that wraps the 0x APIs: indicative prices, on-chain 
 ## The agent contract
 
 1. **Always pass `--yes -o json-envelope`** on anything that executes (`swap`, `cross-chain`). Auto-detection picks JSON for non-TTY stdout, but don't rely on it inside a tool harness.
-2. **Amounts are base units.** USDC (6 decimals): `1000000` = 1 USDC. ETH (18): `1000000000000000000` = 1 ETH. SOL (9): `1000000000` = 1 SOL. The envelope's `data.*.formatted` carries the human-readable form.
+2. **Amounts are base units** — the token's smallest unit, no decimals applied. A 6-decimal token: `1000000` = 1.0; an 18-decimal token: `1000000000000000000` = 1.0; a 9-decimal token (Solana): `1000000000` = 1.0. The envelope's `data.*.formatted` carries the human-readable form.
 3. **Match on `exit_code` first** (stable), then `error.code` (also stable). `error.retryable` says whether a retry can help; `error.suggestion` says what to do instead.
 4. **Dry-run material amounts first.** `--dry-run` is a global flag — simulates everything, signs/submits nothing, exits 30.
 

@@ -98,13 +98,14 @@ pub async fn run(
 
     let client = crate::api::client_for(global, config, output)?;
 
-    chain::validate_base_unit_amount(&args.amount)?;
-    let amount_in: u64 = args.amount.parse().map_err(|_| CliError::Api {
+    // Solana is exact-in only; the swap dispatcher rejects --buy-amount before
+    // we get here, so this is always the sell amount.
+    let amount_spec = args.amount_spec();
+    let amount = amount_spec.value();
+    chain::validate_base_unit_amount(amount)?;
+    let amount_in: u64 = amount.parse().map_err(|_| CliError::Api {
         code: ErrorCode::InputInvalid,
-        message: format!(
-            "Amount '{}' overflows u64 (max ~1.8e19 base units)",
-            args.amount
-        ),
+        message: format!("Amount '{amount}' overflows u64 (max ~1.8e19 base units)"),
         status: None,
         details: None,
         suggestion: None,
@@ -124,7 +125,7 @@ pub async fn run(
     drop(spinner);
 
     let summary = TradeSummary::new("Solana Swap")
-        .row("Sell", format!("{} ({})", args.amount, args.sell))
+        .row("Sell", format!("{} ({})", amount, args.sell))
         .row("Buy", format!("~{} ({})", swap_resp.amount_out, args.buy))
         .row("Slippage", format!("{:.2}%", args.slippage as f64 / 100.0))
         .row("Taker", truncate_address(&taker));
@@ -133,7 +134,7 @@ pub async fn run(
         chain_info,
         &sell,
         &buy,
-        &args.amount,
+        amount,
         swap_resp.amount_out,
         None,
         false,
@@ -188,7 +189,7 @@ pub async fn run(
         chain_info,
         &sell,
         &buy,
-        &args.amount,
+        amount,
         swap_resp.amount_out,
         tx,
         dry_run,
@@ -233,6 +234,9 @@ fn solana_swap_output(
         // Skipped for now; the quoted amount above is what we have.
         buy_amount_settled: None,
         min_buy_amount: buy.amount(&buy_amount_raw_s),
+        // Solana is exact-in only.
+        max_sell_amount: None,
+        exact_out: false,
         rate,
         gas_used: None,
         effective_gas_price: None,

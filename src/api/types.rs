@@ -1,6 +1,44 @@
 use crate::error::{CliError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
+/// Which side of a swap the user pinned: spend an exact amount of the sell
+/// token (exact-in), or receive an exact amount of the buy token (exact-out).
+///
+/// The 0x swap API takes either `sellAmount` or `buyAmount` — never both. This
+/// models that mutual exclusivity. Exact-out is supported on EVM same-chain
+/// swaps via the Allowance Holder endpoints; Solana, gasless, and cross-chain
+/// remain exact-in only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AmountSpec {
+    /// Exact-in: spend exactly this many base units of the sell token.
+    ExactIn(String),
+    /// Exact-out: receive exactly this many base units of the buy token.
+    ExactOut(String),
+}
+
+impl AmountSpec {
+    /// The base-unit amount, regardless of which side it pins.
+    pub fn value(&self) -> &str {
+        match self {
+            Self::ExactIn(v) | Self::ExactOut(v) => v,
+        }
+    }
+
+    /// True when the user pinned the buy side (exact-out).
+    pub fn is_exact_out(&self) -> bool {
+        matches!(self, Self::ExactOut(_))
+    }
+
+    /// The 0x query parameter name and value for this side. Exact-in sends
+    /// `sellAmount`; exact-out sends `buyAmount`.
+    pub fn query_param(&self) -> (&'static str, &str) {
+        match self {
+            Self::ExactIn(v) => ("sellAmount", v),
+            Self::ExactOut(v) => ("buyAmount", v),
+        }
+    }
+}
+
 /// A token amount with raw (base units), formatted (human-readable), and optional USD value.
 /// This is the canonical representation used in all CLI output.
 ///

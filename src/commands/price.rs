@@ -18,9 +18,18 @@ pub struct PriceResult {
     pub chain: String,
     pub sell_token: TokenInfo,
     pub buy_token: TokenInfo,
+    /// Exact-in: the amount sold. Exact-out: the *estimated* sell amount.
     pub sell_amount: TokenAmount,
     pub buy_amount: TokenAmount,
+    /// Exact-in: minimum buy after slippage. Exact-out: equals `buy_amount`
+    /// (the buy side is fixed), so prefer `max_sell_amount` to reason about
+    /// worst-case cost.
     pub min_buy_amount: TokenAmount,
+    /// Exact-out only: worst-case sell amount after slippage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sell_amount: Option<TokenAmount>,
+    /// True when this priced an exact-out (buy-amount) request.
+    pub exact_out: bool,
     pub rate: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gas_estimate: Option<String>,
@@ -30,8 +39,11 @@ pub struct PriceResult {
 
 impl HumanDisplay for PriceResult {
     fn display_human(&self, writer: &mut dyn Write, color: bool) -> io::Result<()> {
+        // Exact-out pins the buy side: the sell figure is an estimate and the
+        // meaningful guarantee is the worst-case sell (Max Sell), not Min Buy.
+        let sell_label = if self.exact_out { "Sell (est)" } else { "Sell" };
         let mut rows = vec![
-            ("Sell".to_string(), self.sell_amount.display()),
+            (sell_label.to_string(), self.sell_amount.display()),
             (
                 "Buy".to_string(),
                 format!(
@@ -45,8 +57,13 @@ impl HumanDisplay for PriceResult {
                 ),
             ),
             ("Rate".to_string(), self.rate.clone()),
-            ("Min Buy".to_string(), self.min_buy_amount.display()),
         ];
+        match (self.exact_out, &self.max_sell_amount) {
+            (true, Some(max_sell)) => {
+                rows.push(("Max Sell".to_string(), max_sell.display()));
+            }
+            _ => rows.push(("Min Buy".to_string(), self.min_buy_amount.display())),
+        }
 
         if !self.route.is_empty() {
             let route_str = self
@@ -95,14 +112,28 @@ pub async fn run(
     // Validate token addresses
     chain::validate_token_address(&args.sell, chain_info)?;
     chain::validate_token_address(&args.buy, chain_info)?;
-    chain::validate_base_unit_amount(&args.amount)?;
+
+    let amount_spec = args.amount_spec();
+    chain::validate_base_unit_amount(amount_spec.value())?;
+
+    // Exact-out (--buy-amount) is only supported on the EVM Allowance Holder
+    // path. Reject it before we hit Solana / gasless pricing.
+    if amount_spec.is_exact_out() {
+        if chain_info.is_solana() {
+            return Err(super::exact_out_unsupported("Solana swaps"));
+        }
+        if args.gasless {
+            return Err(super::exact_out_unsupported("gasless swaps"));
+        }
+    }
 
     let client = crate::api::client_for(global, &config, output)?;
 
     let spinner = output.spinner("Fetching price...");
 
-    // Amounts are in base units (e.g. 1000000 = 1 USDC with 6 decimals)
-    let sell_amount = &args.amount;
+    // Amounts are in base units (a 6-decimal token uses 1000000 = 1.0).
+    // Solana / gasless only reach here for exact-in, so this is the sell side.
+    let sell_amount = amount_spec.value();
 
     let mut metadata = Metadata::for_chain(chain_info);
 
@@ -116,7 +147,9 @@ pub async fn run(
             ),
             status: None,
             details: None,
-            suggestion: Some("For SOL, 1 SOL = 1000000000 lamports".into()),
+            suggestion: Some(
+                "Solana amounts are in lamports (9 decimals): 1000000000 = 1.0".into(),
+            ),
         })?;
 
         // Solana price is read-only and never signs anything; use a constant
@@ -148,6 +181,8 @@ pub async fn run(
             sell_amount: sell.amount(sell_amount),
             buy_amount: buy.amount(&buy_raw),
             min_buy_amount: buy.amount(&buy_raw),
+            max_sell_amount: None,
+            exact_out: false,
             rate: compute_rate(sell_amount, &buy_raw),
             gas_estimate: None,
             route: Vec::new(),
@@ -202,6 +237,8 @@ pub async fn run(
             sell_amount: sell.amount(&resp.sell_amount),
             buy_amount: buy.amount(&resp.buy_amount),
             min_buy_amount: buy.amount(&resp.min_buy_amount),
+            max_sell_amount: None,
+            exact_out: false,
             rate: compute_rate(&resp.sell_amount, &resp.buy_amount),
             gas_estimate: None, // Gasless = no gas
             route: Vec::new(),
@@ -224,7 +261,7 @@ pub async fn run(
             chain_info.evm_chain_id()?,
             &args.sell,
             &args.buy,
-            sell_amount,
+            &amount_spec,
             None,
         )
         .await;
@@ -286,7 +323,7 @@ fn build_price_result(
     sell: &SideMeta,
     buy: &SideMeta,
 ) -> PriceResult {
-    let route = resp.route.as_ref().map(|r| r.sources()).unwrap_or_default();
+    let route = resp.route_sources();
 
     let gas_estimate = match (&resp.gas, &resp.gas_price) {
         (Some(gas), Some(gas_price)) => {
@@ -322,10 +359,12 @@ fn build_price_result(
         chain: chain_info.display_name.to_string(),
         sell_token: sell.token_info(),
         buy_token: buy.token_info(),
-        sell_amount: sell.amount(&resp.sell_amount),
+        sell_amount: sell.amount(resp.display_sell_amount()),
         buy_amount: buy.amount(&resp.buy_amount),
-        min_buy_amount: buy.amount(&resp.min_buy_amount),
-        rate: compute_rate(&resp.sell_amount, &resp.buy_amount),
+        min_buy_amount: buy.amount(resp.display_min_buy_amount()),
+        max_sell_amount: resp.max_sell_amount().map(|m| sell.amount(m)),
+        exact_out: resp.is_exact_out(),
+        rate: compute_rate(resp.display_sell_amount(), &resp.buy_amount),
         gas_estimate,
         route,
         liquidity_available: resp.liquidity_available.unwrap_or(true),

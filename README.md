@@ -171,10 +171,14 @@ solana = "/path/to/keypair.json"  # file paths stay here (not secret)
   --amount 1000000
 
 # Gasless price
-0x price --chain base --sell USDC --buy WETH --amount 1000000 --gasless
+0x price --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --amount 1000000 --gasless
 
 # JSON output for scripting
-0x price --chain base --sell USDC --buy WETH --amount 1000000 -o json
+0x price --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --amount 1000000 -o json
+
+# Exact-out: how much of the sell token to receive exactly this many base units
+# of the buy token (EVM same-chain only)
+0x price --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --buy-amount 1000000000000000
 ```
 
 ### EVM Swap
@@ -187,24 +191,35 @@ solana = "/path/to/keypair.json"  # file paths stay here (not secret)
   --amount 1000000
 
 # Non-interactive (for agents/scripts)
-0x swap --chain base --sell USDC --buy WETH --amount 1000000 --yes -o json
+0x swap --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --amount 1000000 --yes -o json
 
 # Dry run (simulate without executing)
-0x swap --chain base --sell USDC --buy WETH --amount 1000000 --dry-run
+0x swap --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --amount 1000000 --dry-run
 
 # Custom slippage (200 bps = 2%)
-0x swap --chain base --sell USDC --buy WETH --amount 1000000 --slippage 200
+0x swap --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --amount 1000000 --slippage 200
 
 # Unlimited token approval (instead of exact amount)
-0x swap --chain base --sell USDC --buy WETH --amount 1000000 --approval unlimited
+0x swap --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --amount 1000000 --approval unlimited
+
+# Exact-out: spend whatever it takes to receive exactly this many base units of
+# the buy token (use --buy-amount instead of --amount; EVM same-chain only)
+0x swap --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --buy-amount 500000000000000000
 ```
+
+**Exact-in vs exact-out.** Pass exactly one of `--amount` (exact-in: sell this
+much) or `--buy-amount` (exact-out: receive this much, spending whatever it
+takes). Exact-out is supported for EVM same-chain swaps via Allowance Holder —
+not Solana, gasless, or cross-chain. In exact-out mode the buy amount is fixed
+and the response reports an estimated sell plus a `max_sell_amount` (the
+worst-case spend after slippage, which the token approval covers).
 
 ### Gasless Swap
 
 No gas fees required. The 0x protocol handles gas on your behalf.
 
 ```bash
-0x swap --chain base --sell USDC --buy WETH --amount 1000000 --gasless
+0x swap --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0x4200000000000000000000000000000000000006 --amount 1000000 --gasless
 ```
 
 ### Solana Swap
@@ -228,12 +243,12 @@ No gas fees required. The 0x protocol handles gas on your behalf.
 
 # Auto-select best price quote
 0x cross-chain --from base --to arbitrum \
-  --sell USDC --buy USDC --amount 1000000 \
+  --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0xaf88d065e77c8cC2239327C5EDb3A432268e5831 --amount 1000000 \
   --select-quote best-price --yes
 
 # Sort by fastest bridge
 0x cross-chain --from base --to arbitrum \
-  --sell USDC --buy USDC --amount 1000000 --sort speed
+  --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --buy 0xaf88d065e77c8cC2239327C5EDb3A432268e5831 --amount 1000000 --sort speed
 ```
 
 Solana-origin swaps automatically include routes that need an extra one-shot

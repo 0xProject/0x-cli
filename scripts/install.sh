@@ -1,7 +1,7 @@
 #!/bin/sh
 # 0x CLI installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli-playground/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | sh
 #
 # Downloads a prebuilt `0x` binary from GitHub Releases, verifies its SHA-256
 # checksum, and installs it to a bin directory on your PATH.
@@ -17,7 +17,7 @@
 
 set -eu
 
-REPO="0xProject/0x-cli-playground"
+REPO="0xProject/0x-cli"
 BIN="0x"
 
 # --- pretty output (no color when not a tty) -------------------------------

@@ -37,28 +37,28 @@ downloads the binary from GitHub Releases, verifies its SHA-256 checksum, and dr
 it in `~/.local/bin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli-playground/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | sh
 ```
 
 Pin a specific version or change the install directory:
 
 ```bash
 # Install a specific version
-curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli-playground/main/scripts/install.sh | ZEROX_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | ZEROX_VERSION=v0.1.0 sh
 
 # Install somewhere on your PATH
-curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli-playground/main/scripts/install.sh | ZEROX_BIN_DIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | ZEROX_BIN_DIR=/usr/local/bin sh
 ```
 
 On **Windows**, download the `.zip` for `x86_64-pc-windows-msvc` from the
-[latest release](https://github.com/0xProject/0x-cli-playground/releases/latest)
+[latest release](https://github.com/0xProject/0x-cli/releases/latest)
 and put `0x.exe` on your PATH.
 
 ### From source
 
 ```bash
 # Requires Rust 1.75+
-git clone https://github.com/0xProject/0x-cli-playground && cd 0x-cli-playground
+git clone https://github.com/0xProject/0x-cli && cd 0x-cli
 cargo install --path .
 
 # Verify

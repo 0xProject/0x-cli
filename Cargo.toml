@@ -3,7 +3,7 @@ name = "zero-x-cli"
 version = "0.1.0"
 edition = "2021"
 description = "Trade tokens across chains using 0x APIs"
-license = "MIT"
+license = "Apache-2.0"
 
 [lib]
 name = "zero_x_cli"

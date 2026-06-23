@@ -2,6 +2,8 @@
 
 Trade tokens across Solana and EVM chains from your terminal. Built for both human traders and AI agents.
 
+> This CLI is in beta and under active development. While we don't anticipate major breaking changes, commands, flags, and output formats may still change between releases. Pin a version and review release notes before relying on current behavior in production workflows.
+
 ## Quick Start
 
 ```bash

@@ -113,6 +113,10 @@ pub struct WalletConfig {
     /// Solana keypair file path or base58 string
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solana: Option<String>,
+
+    /// Tron private key (hex string)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tron: Option<String>,
 }
 
 /// Anonymous usage telemetry settings. Telemetry is opt-out (default on) but
@@ -173,6 +177,14 @@ impl AppConfig {
             Some(ref s) if is_path_like(s) => copy.wallet.solana.clone(),
             Some(_) => Some("***redacted***".to_string()),
             None if keyring_has(crate::wallet::keyring_store::keys::WALLET_SOLANA) => {
+                Some("<stored in keyring>".to_string())
+            }
+            None => None,
+        };
+
+        copy.wallet.tron = match copy.wallet.tron {
+            Some(_) => Some("***redacted***".to_string()),
+            None if keyring_has(crate::wallet::keyring_store::keys::WALLET_TRON) => {
                 Some("<stored in keyring>".to_string())
             }
             None => None,
@@ -256,6 +268,7 @@ mod tests {
             wallet: WalletConfig {
                 evm: Some("0xdeadbeef".to_string()),
                 solana: Some("/home/user/.config/solana/id.json".to_string()),
+                tron: None,
             },
             ..Default::default()
         };
@@ -291,6 +304,7 @@ mod tests {
             wallet: WalletConfig {
                 evm: Some("0xdeadbeef".to_string()),
                 solana: None,
+                tron: None,
             },
             profiles: HashMap::new(),
             telemetry: TelemetryConfig::default(),

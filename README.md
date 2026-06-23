@@ -23,7 +23,7 @@ cargo install --path .
 ## Features
 
 - **4 APIs**: EVM Swap (Allowance Holder), Gasless Swap, Solana Swap, Cross-Chain
-- **20 chains**: Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Linea, Scroll, Blast, Mantle, Berachain, Sonic, Unichain, World Chain, Abstract, Ink, Monad, HyperEVM, Solana
+- **21 chains**: Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Linea, Scroll, Blast, Mantle, Berachain, Sonic, Unichain, World Chain, Abstract, Ink, Monad, HyperEVM, Solana, Tron
 - **Agent-first**: Auto-detect non-TTY for JSON output, structured error codes, stable exit codes, inline `RESPONSE:` schemas in every `--help`
 - **Safe by default**: OS keyring for wallet secrets, transaction simulation before every execution, `--dry-run` mode, exact token approvals
 - **Rich UX**: Colored tables, progress spinners, interactive confirmation, shell completions
@@ -118,6 +118,9 @@ By default, `wallet.evm` and `wallet.solana` (when given key material rather tha
 | `0x config set wallet.solana /path/to/file.json` | `~/.0x-config/config.toml` (it's a path) |
 | `0x config set wallet.solana <base58>` | OS keyring |
 | `ZEROX_EVM_PRIVATE_KEY` / `ZEROX_SOLANA_KEYPAIR` env var | Read directly, never persisted |
+| `0x config set wallet.tron <hex-key>` | OS keyring |
+| `0x config set wallet.tron <hex-key> --plaintext` | `~/.0x-config/config.toml` |
+| `ZEROX_TRON_PRIVATE_KEY` env var | Read directly, never persisted |
 
 `0x config show` reports keyring-stored wallets as `<stored in keyring>`. If the OS keyring is unavailable (e.g. headless Linux with no DBus), use `--plaintext` or the env vars.
 
@@ -130,6 +133,7 @@ Environment variables always take precedence over config file values.
 | `ZEROX_API_KEY` | 0x API key |
 | `ZEROX_EVM_PRIVATE_KEY` | EVM private key (hex) |
 | `ZEROX_SOLANA_KEYPAIR` | Solana keypair file path or base58 |
+| `ZEROX_TRON_PRIVATE_KEY` | Tron private key (hex) |
 | `ZEROX_DEFAULT_CHAIN` | Default chain name or ID |
 | `ZEROX_RPC_URL` | Override RPC URL for any chain |
 | `ZEROX_TELEMETRY` | Set falsy (`0`/`false`/`off`) to disable usage telemetry |
@@ -232,6 +236,8 @@ No gas fees required. The 0x protocol handles gas on your behalf.
 ```
 
 ### Cross-Chain Swap
+
+> **Note:** Tron is supported for bridging only — it is not available in `swap`, `price`, or `gasless`. Use `--from tron` or `--to tron` with `cross-chain`.
 
 ```bash
 # Interactive (shows quote table, lets you pick)
@@ -440,6 +446,7 @@ Every interactive prompt has a flag equivalent:
 | 81457 | blast | Blast | ETH |
 | 534352 | scroll | Scroll | ETH |
 | solana | solana | Solana | SOL |
+| tron | tron | Tron | TRX |
 
 ## Security
 
@@ -447,7 +454,7 @@ Every interactive prompt has a flag equivalent:
 - **Config file**: Created with `0600` permissions (owner read/write only)
 - **Config directory**: Created with `0700` permissions
 - **Redaction**: `0x config show` and `0x config get` never reveal secret material. Wallets stored in the keyring show as `<stored in keyring>`; plaintext wallets show as `***redacted***`; Solana file paths show verbatim because the path itself isn't sensitive.
-- **Transaction simulation**: Every transaction is simulated via `eth_call` (EVM) or `simulate_transaction` (Solana) before submission
+- **Transaction simulation**: EVM and Solana transactions are simulated via `eth_call` or `simulate_transaction` before submission. Tron cross-chain transactions are not pre-simulated.
 - **Approval strategy**: Default is `exact` (only approve the needed amount). Use `--approval unlimited` for max approval.
 - **Environment variables**: Sensitive values like private keys can be set via env vars (`ZEROX_EVM_PRIVATE_KEY`, `ZEROX_SOLANA_KEYPAIR`) to avoid persisting them at all — read-once, never written to disk or keyring.
 

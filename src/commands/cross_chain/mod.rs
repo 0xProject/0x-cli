@@ -328,6 +328,48 @@ pub async fn run(
         })?;
 
         sig.to_string()
+    } else if selected.transaction.chain_type == "tvm" {
+        // Tron origin: build, sign, and broadcast a TriggerSmartContract tx.
+        let signer = origin_wallet.tron_signer().ok_or_else(|| CliError::Api {
+            code: ErrorCode::ApiError,
+            message: "Quote returned a Tron transaction but the origin chain isn't Tron".into(),
+            status: None,
+            details: None,
+            suggestion: None,
+        })?;
+        let details = &selected.transaction.details;
+        let to = details.to.as_deref().ok_or_else(|| CliError::Api {
+            code: ErrorCode::ApiError,
+            message: "Tron quote missing 'to' address".into(),
+            status: None,
+            details: None,
+            suggestion: None,
+        })?;
+        let data = details.data.as_deref().unwrap_or_default();
+        let owner = details.owner_address.as_deref().unwrap_or(&origin_address);
+        let value_sun: u64 = match details.value.as_deref() {
+            None => 0,
+            Some(v) => v.parse().map_err(|_| CliError::Api {
+                code: ErrorCode::ApiError,
+                message: format!("Tron quote returned a non-numeric value: '{v}'"),
+                status: None,
+                details: None,
+                suggestion: None,
+            })?,
+        };
+
+        let rpc = config::resolve_rpc(global.rpc_url.as_deref(), &config, origin)?;
+        spinner.set_message("Building and broadcasting Tron transaction...".to_string());
+        crate::chain::tron::build_sign_broadcast(
+            &rpc.url,
+            signer,
+            to,
+            owner,
+            data,
+            value_sun,
+            crate::chain::tron::DEFAULT_FEE_LIMIT_SUN,
+        )
+        .await?
     } else {
         return Err(CliError::Api {
             code: ErrorCode::ApiError,
@@ -398,12 +440,13 @@ pub async fn run(
     Ok(output.emit_success("cross-chain", &result, metadata, warnings, exit_code))
 }
 
-/// A loaded origin wallet — exactly one of EVM or Solana, depending on the
-/// origin chain. Held for the lifetime of a cross-chain swap so we don't
+/// A loaded origin wallet — exactly one of EVM, Solana, or Tron, depending on
+/// the origin chain. Held for the lifetime of a cross-chain swap so we don't
 /// re-load (and re-prompt the OS keyring) on every step.
 enum OriginWallet {
     Evm(alloy::signers::local::PrivateKeySigner),
     Solana(solana_sdk::signer::keypair::Keypair),
+    Tron(crate::wallet::tron::TronSigner),
 }
 
 impl OriginWallet {
@@ -412,7 +455,10 @@ impl OriginWallet {
         config: &config::types::AppConfig,
         cli_wallet: Option<&str>,
     ) -> Result<Self, CliError> {
-        if origin.is_solana() {
+        if origin.is_tron() {
+            let s = crate::wallet::tron::load_tron_signer(config, cli_wallet)?;
+            Ok(OriginWallet::Tron(s))
+        } else if origin.is_solana() {
             let kp = crate::wallet::solana::load_solana_keypair(config, cli_wallet)?;
             Ok(OriginWallet::Solana(kp))
         } else {
@@ -425,6 +471,7 @@ impl OriginWallet {
         match self {
             OriginWallet::Evm(s) => format!("{:?}", s.address()),
             OriginWallet::Solana(kp) => crate::wallet::solana::pubkey_string(kp),
+            OriginWallet::Tron(s) => s.address().to_string(),
         }
     }
 
@@ -438,6 +485,13 @@ impl OriginWallet {
     fn solana_keypair(&self) -> Option<&solana_sdk::signer::keypair::Keypair> {
         match self {
             OriginWallet::Solana(kp) => Some(kp),
+            _ => None,
+        }
+    }
+
+    fn tron_signer(&self) -> Option<&crate::wallet::tron::TronSigner> {
+        match self {
+            OriginWallet::Tron(s) => Some(s),
             _ => None,
         }
     }
@@ -457,10 +511,23 @@ fn resolve_destination_address(
     destination: &chain::ChainInfo,
     config: &config::types::AppConfig,
 ) -> Result<String, CliError> {
-    if origin.is_evm() == destination.is_evm() {
+    // Same VM → the origin wallet's own address receives. Compare chain TYPE,
+    // not is_evm(): Solana and Tron are both non-EVM but are NOT the same VM.
+    if origin.chain_type == destination.chain_type {
         return Ok(origin_wallet.address());
     }
-    if destination.is_solana() {
+    if destination.is_tron() {
+        let s = crate::wallet::tron::load_tron_signer(config, None).map_err(|e| match e {
+            CliError::Wallet { code, message } => CliError::Wallet {
+                code,
+                message: format!(
+                    "Cross-chain into Tron needs a Tron wallet to receive into. {message}"
+                ),
+            },
+            other => other,
+        })?;
+        Ok(s.address().to_string())
+    } else if destination.is_solana() {
         let kp = crate::wallet::solana::load_solana_keypair(config, None).map_err(|e| {
             // Surface a clearer message: the user wants to bridge INTO Solana
             // but has no Solana wallet configured. We need at least its
@@ -523,4 +590,17 @@ async fn resolve_one_evm(
         });
     }
     result
+}
+
+#[cfg(test)]
+mod tron_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn test_same_vm_check_uses_chain_type_not_is_evm() {
+        // Solana and Tron are both non-EVM; they must NOT be treated as same-VM.
+        let solana = chain::resolve_chain("solana").unwrap();
+        let tron = chain::resolve_chain("tron").unwrap();
+        assert_ne!(solana.chain_type, tron.chain_type);
+    }
 }

@@ -29,6 +29,8 @@ Non-interactive (agent-driven) setup:
 | `rpc.<chain>` | Custom RPC URL per chain, e.g. `rpc.base` |
 | `wallet.evm` | EVM private key (hex) — secret → keyring |
 | `wallet.solana` | Keypair file path (→ config) or base58/JSON-array secret (→ keyring) |
+| `wallet.tron` | Tron private key (hex) — secret → keyring |
+| `rpc.tron` | Custom Tron full-node RPC URL (default: `https://api.trongrid.io`) |
 | `active_profile` | Profile applied when --profile isn't passed |
 | `profiles.<name>.base_url` | Override the API base URL for a profile |
 | `profiles.<name>.api_key` | API key for a profile |
@@ -46,6 +48,7 @@ Non-interactive (agent-driven) setup:
 | `ZEROX_API_KEY` | `api_key` |
 | `ZEROX_EVM_PRIVATE_KEY` | `wallet.evm` |
 | `ZEROX_SOLANA_KEYPAIR` | `wallet.solana` (path or base58) |
+| `ZEROX_TRON_PRIVATE_KEY` | `wallet.tron` |
 | `ZEROX_DEFAULT_CHAIN` | `defaults.chain` |
 | `ZEROX_RPC_URL` | RPC for the current command |
 | `ZEROX_OUTPUT` | `-o/--output` format |

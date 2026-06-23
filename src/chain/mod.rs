@@ -1,6 +1,7 @@
 pub mod evm;
 pub mod retry;
 pub mod solana;
+pub mod tron;
 
 use crate::error::CliError;
 use crate::output::human::DataTable;
@@ -30,6 +31,7 @@ pub struct ChainInfo {
 pub enum ChainType {
     Evm,
     Svm,
+    Tvm,
 }
 
 /// Chain identifier that supports both numeric IDs and the special "solana"
@@ -42,6 +44,7 @@ pub enum ChainType {
 pub enum ChainId {
     Numeric(u64),
     Solana,
+    Tron,
 }
 
 impl std::fmt::Display for ChainId {
@@ -49,6 +52,7 @@ impl std::fmt::Display for ChainId {
         match self {
             ChainId::Numeric(id) => write!(f, "{id}"),
             ChainId::Solana => write!(f, "solana"),
+            ChainId::Tron => write!(f, "tron"),
         }
     }
 }
@@ -58,6 +62,7 @@ impl Serialize for ChainId {
         match self {
             ChainId::Numeric(id) => serializer.serialize_u64(*id),
             ChainId::Solana => serializer.serialize_str("solana"),
+            ChainId::Tron => serializer.serialize_str("tron"),
         }
     }
 }
@@ -71,8 +76,16 @@ impl ChainInfo {
         self.chain_type == ChainType::Evm
     }
 
+    pub fn is_tron(&self) -> bool {
+        self.chain_type == ChainType::Tvm
+    }
+
     pub fn explorer_tx_url(&self, tx_hash: &str) -> String {
-        format!("{}/tx/{}", self.explorer_url, tx_hash)
+        if self.chain_type == ChainType::Tvm {
+            format!("{}/#/transaction/{}", self.explorer_url, tx_hash)
+        } else {
+            format!("{}/tx/{}", self.explorer_url, tx_hash)
+        }
     }
 
     /// Get the numeric chain ID (for API calls). Returns None for Solana.
@@ -80,6 +93,7 @@ impl ChainInfo {
         match self.id {
             ChainId::Numeric(id) => Some(id),
             ChainId::Solana => None,
+            ChainId::Tron => None,
         }
     }
 
@@ -99,12 +113,30 @@ impl ChainInfo {
     }
 
     /// Get the chain identifier for 0x API calls.
-    /// For EVM: numeric string. For Solana: "solana".
+    /// For EVM: numeric string. For Solana: "solana". For Tron: "tron".
     pub fn api_chain_id(&self) -> String {
         match self.id {
             ChainId::Numeric(id) => id.to_string(),
             ChainId::Solana => "solana".to_string(),
+            ChainId::Tron => "tron".to_string(),
         }
+    }
+
+    /// Error returned when a Tron chain is used on a command that only the
+    /// cross-chain API supports (swap/price/gasless).
+    pub fn reject_if_tron(&self, command: &str) -> Result<(), CliError> {
+        if self.is_tron() {
+            return Err(CliError::Api {
+                code: crate::error::ErrorCode::InputInvalid,
+                message: format!("Tron is not supported by '{command}'"),
+                status: None,
+                details: None,
+                suggestion: Some(
+                    "Tron is supported for bridging only — use '0x cross-chain --from/--to tron'".into(),
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -292,6 +324,15 @@ const CHAINS: &[ChainInfo] = &[
         chain_type: ChainType::Svm,
         default_rpc_url: Some("https://api.mainnet-beta.solana.com"),
     },
+    ChainInfo {
+        id: ChainId::Tron,
+        name: "tron",
+        display_name: "Tron",
+        native_token: "TRX",
+        explorer_url: "https://tronscan.org",
+        chain_type: ChainType::Tvm,
+        default_rpc_url: Some("https://api.trongrid.io"),
+    },
 ];
 
 /// Read-only view of every supported chain. Consumers iterate this for
@@ -362,6 +403,16 @@ pub fn validate_token_address(token: &str, chain_info: &ChainInfo) -> Result<(),
                 ),
             });
         }
+    } else if chain_info.is_tron() && !crate::chain::tron::is_valid_tron_address(token) {
+        return Err(CliError::Api {
+            code: crate::error::ErrorCode::InputInvalid,
+            message: format!("'{token}' is not a valid Tron token address"),
+            status: None,
+            details: None,
+            suggestion: Some(
+                "Use the base58check TRC20 address, e.g. TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t for USDT on Tron".into(),
+            ),
+        });
     }
     Ok(())
 }
@@ -526,5 +577,40 @@ mod tests {
             serde_json::to_string(&ChainId::Solana).unwrap(),
             "\"solana\""
         );
+    }
+
+    #[test]
+    fn test_resolve_tron() {
+        let chain = resolve_chain("tron").unwrap();
+        assert!(chain.is_tron());
+        assert!(!chain.is_evm());
+        assert!(!chain.is_solana());
+        assert_eq!(chain.numeric_id(), None);
+        assert_eq!(chain.api_chain_id(), "tron");
+    }
+
+    #[test]
+    fn test_chain_id_tron_serializes_as_string() {
+        assert_eq!(
+            serde_json::to_string(&ChainId::Tron).unwrap(),
+            "\"tron\""
+        );
+    }
+
+    #[test]
+    fn test_tron_explorer_tx_url() {
+        let chain = resolve_chain("tron").unwrap();
+        assert_eq!(
+            chain.explorer_tx_url("abc123"),
+            "https://tronscan.org/#/transaction/abc123"
+        );
+    }
+
+    #[test]
+    fn test_validate_tron_token_address() {
+        let tron = resolve_chain("tron").unwrap();
+        assert!(validate_token_address("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", tron).is_ok());
+        assert!(validate_token_address("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", tron).is_err());
+        assert!(validate_token_address("not-an-address", tron).is_err());
     }
 }

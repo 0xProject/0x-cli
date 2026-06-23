@@ -431,6 +431,7 @@ mod tests {
                     gas_price: None,
                     value: None,
                     serialized_transaction: None,
+                    owner_address: None,
                 },
             },
             gas_costs: None,

@@ -108,6 +108,7 @@ pub async fn run(
 
     // Resolve chain
     let chain_info = chain::resolve_chain(&args.chain)?;
+    chain_info.reject_if_tron("price")?;
 
     // Validate token addresses
     chain::validate_token_address(&args.sell, chain_info)?;

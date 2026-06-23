@@ -54,7 +54,7 @@ pub struct CrossChainStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CrossChainTransaction {
-    pub chain_type: String, // "evm" or "svm"
+    pub chain_type: String, // "evm", "svm", or "tvm"
     pub details: CrossChainTxDetails,
 }
 
@@ -70,6 +70,9 @@ pub struct CrossChainTxDetails {
 
     // SVM fields
     pub serialized_transaction: Option<String>,
+
+    // TVM (Tron) field
+    pub owner_address: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

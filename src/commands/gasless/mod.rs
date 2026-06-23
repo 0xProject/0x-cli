@@ -30,6 +30,7 @@ pub async fn run_gasless(
 ) -> Result<i32, CliError> {
     let config = config::load_config()?;
     let chain_info = chain::resolve_chain(&args.chain)?;
+    chain_info.reject_if_tron("gasless")?;
     let chain_id = chain_info.numeric_id().ok_or_else(|| CliError::Api {
         code: ErrorCode::InputInvalid,
         message: "Gasless swaps are only supported on EVM chains".into(),

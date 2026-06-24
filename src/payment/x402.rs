@@ -19,7 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use x402_chain_eip155::V2Eip155ExactClient;
 use x402_reqwest::{ReqwestWithPayments, ReqwestWithPaymentsBuild, X402Client};
-use x402_types::scheme::client::{PaymentCandidate, PaymentSelector};
+use x402_types::proto::PaymentRequired;
+use x402_types::scheme::client::{
+    PaymentCandidate, PaymentCandidateSigner, PaymentSelector, X402Error, X402SchemeClient,
+};
+use x402_types::scheme::X402SchemeId;
 
 /// USDC on Base — the only asset the `--max-payment` cap (6-decimal base units)
 /// is denominated against for x402. The gateway always offers Base USDC (or
@@ -85,6 +89,91 @@ impl PaymentSelector for CappedSelector {
     }
 }
 
+/// Re-cases `payload.authorization.to` in a signed x402 payload to its EIP-55
+/// checksummed form. The `x402-chain-eip155` client serializes the recipient as
+/// a lowercase address, but the 0x agent gateway's facilitator compares the
+/// recipient string **case-sensitively** against the checksummed `payTo` it
+/// advertised — so a lowercase recipient is rejected with "Payment
+/// authorization recipient does not match project requirements" before any
+/// settlement. Re-casing the JSON string does **not** invalidate the EIP-712
+/// signature (it authorizes the 20 address bytes, not their text), so this is a
+/// safe, transport-level normalization.
+fn checksum_recipient(payload_b64: &str) -> Result<String, X402Error> {
+    let bytes = STANDARD
+        .decode(payload_b64.trim())
+        .map_err(|e| X402Error::SigningError(format!("payload base64 decode: {e}")))?;
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+
+    if let Some(to) = value
+        .get_mut("payload")
+        .and_then(|p| p.get_mut("authorization"))
+        .and_then(|a| a.get_mut("to"))
+    {
+        if let Some(addr) = to.as_str() {
+            let checksummed = addr
+                .parse::<alloy::primitives::Address>()
+                .map_err(|e| X402Error::SigningError(format!("recipient parse: {e}")))?
+                .to_checksum(None);
+            *to = serde_json::Value::String(checksummed);
+        }
+    }
+
+    let reencoded = serde_json::to_vec(&value)?;
+    Ok(STANDARD.encode(reencoded))
+}
+
+/// Wraps a candidate's signer so the produced payload has a checksummed
+/// recipient. See [`checksum_recipient`].
+struct ChecksumFixingSigner {
+    inner: Box<dyn PaymentCandidateSigner + Send + Sync>,
+}
+
+#[async_trait::async_trait]
+impl PaymentCandidateSigner for ChecksumFixingSigner {
+    async fn sign_payment(&self) -> Result<String, X402Error> {
+        let signed = self.inner.sign_payment().await?;
+        checksum_recipient(&signed)
+    }
+}
+
+/// Wraps a scheme client (e.g. [`V2Eip155ExactClient`]) so every candidate it
+/// produces signs through [`ChecksumFixingSigner`]. Identity (namespace /
+/// scheme / version) is delegated unchanged so the middleware still routes 402
+/// challenges to it.
+struct ChecksumFixingScheme<C> {
+    inner: C,
+}
+
+impl<C: X402SchemeId> X402SchemeId for ChecksumFixingScheme<C> {
+    fn x402_version(&self) -> u8 {
+        self.inner.x402_version()
+    }
+    fn namespace(&self) -> &str {
+        self.inner.namespace()
+    }
+    fn scheme(&self) -> &str {
+        self.inner.scheme()
+    }
+}
+
+impl<C: X402SchemeClient> X402SchemeClient for ChecksumFixingScheme<C> {
+    fn accept(&self, payment_required: &PaymentRequired) -> Vec<PaymentCandidate> {
+        self.inner
+            .accept(payment_required)
+            .into_iter()
+            .map(|c| PaymentCandidate {
+                signer: Box::new(ChecksumFixingSigner { inner: c.signer }),
+                chain_id: c.chain_id,
+                asset: c.asset,
+                amount: c.amount,
+                scheme: c.scheme,
+                x402_version: c.x402_version,
+                pay_to: c.pay_to,
+            })
+            .collect()
+    }
+}
+
 /// Settlement data from the `PAYMENT-RESPONSE` header (base64 JSON).
 #[derive(Debug, Default, Deserialize)]
 struct X402Settlement {
@@ -112,7 +201,9 @@ pub(super) async fn fetch<T: serde::de::DeserializeOwned>(
     };
     let x402_client = X402Client::new()
         .with_selector(selector)
-        .register(V2Eip155ExactClient::new(payment_signer));
+        .register(ChecksumFixingScheme {
+            inner: V2Eip155ExactClient::new(payment_signer),
+        });
 
     // A fresh client with ONLY the x402 middleware — deliberately no
     // reqwest-retry layer, so a transient failure never silently re-signs or
@@ -149,10 +240,29 @@ pub(super) async fn fetch<T: serde::de::DeserializeOwned>(
 
     let status = response.status();
     if status.as_u16() == 402 {
-        // Defensive: when the selector returns None the middleware surfaces an
-        // Err (handled above), not Ok(402) — so this branch is normally
-        // unreachable. Kept fail-safe in case a future middleware version
-        // returns the original 402 instead.
+        let (invoked, count, min_amount) = snapshot;
+        let payment_submitted =
+            invoked && count > 0 && min_amount.map(|m| m <= max_payment).unwrap_or(false);
+        if payment_submitted {
+            // A candidate within the cap was selected, signed, and submitted,
+            // yet the gateway still returned 402. This is a settlement-side
+            // rejection — surface the gateway's real error instead of
+            // pretending no payable scheme was offered. Money may or may not
+            // have moved.
+            let body = response.text().await.unwrap_or_default();
+            return Err(CliError::Transaction {
+                code: ErrorCode::PaymentSettlementFailed,
+                message: format!(
+                    "Agent gateway rejected the signed payment (402): {}",
+                    crate::api::truncate_for_error(&body)
+                ),
+                tx_hash: None,
+                suggestion: Some(
+                    "Check your wallet before retrying — a payment may have been submitted.".into(),
+                ),
+            });
+        }
+        // Selector found nothing payable within the cap — nothing was signed.
         return Err(classify_unpaid(snapshot, max_payment));
     }
     if !status.is_success() {
@@ -304,6 +414,48 @@ mod tests {
 
     fn snap(invoked: bool, count: usize, min: Option<u64>) -> (bool, usize, Option<U256>) {
         (invoked, count, min.map(U256::from))
+    }
+
+    #[test]
+    fn checksum_recipient_recases_to_eip55_keeping_other_fields() {
+        // Lowercase `to`, like the x402-chain-eip155 client emits today.
+        let payload = serde_json::json!({
+            "x402Version": 2,
+            "payload": {
+                "signature": "0xabc",
+                "authorization": {
+                    "from": "0x1563915e194d8cfba1943570603f7606a3115508",
+                    "to": "0xb15a55e85fdf5edc41b6c1eaf7813e2c6e6def59",
+                    "value": "10000"
+                }
+            }
+        });
+        let b64 = STANDARD.encode(serde_json::to_vec(&payload).unwrap());
+
+        let fixed_b64 = checksum_recipient(&b64).unwrap();
+        let fixed: serde_json::Value =
+            serde_json::from_slice(&STANDARD.decode(&fixed_b64).unwrap()).unwrap();
+
+        // Recipient is now EIP-55 checksummed (matches the advertised payTo).
+        assert_eq!(
+            fixed["payload"]["authorization"]["to"],
+            "0xb15a55e85FdF5edc41B6c1eaf7813e2c6e6def59"
+        );
+        // Signature and other fields are untouched.
+        assert_eq!(fixed["payload"]["signature"], "0xabc");
+        assert_eq!(fixed["x402Version"], 2);
+        assert_eq!(
+            fixed["payload"]["authorization"]["from"],
+            "0x1563915e194d8cfba1943570603f7606a3115508"
+        );
+    }
+
+    #[test]
+    fn checksum_recipient_tolerates_missing_authorization() {
+        // Must not panic / error if the shape is unexpected — pass through.
+        let payload = serde_json::json!({"x402Version": 2, "payload": {}});
+        let b64 = STANDARD.encode(serde_json::to_vec(&payload).unwrap());
+        assert!(checksum_recipient(&b64).is_ok());
     }
 
     #[test]

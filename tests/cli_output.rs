@@ -31,11 +31,16 @@ fn test_help_exits_0() {
 
 #[test]
 fn test_version() {
+    // Assert against the crate version rather than a hardcoded string so the
+    // test doesn't go stale on every version bump.
     cmd()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("0x 0.1.0"));
+        .stdout(predicate::str::contains(format!(
+            "0x {}",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]

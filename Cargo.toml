@@ -98,6 +98,10 @@ mpp = { version = "0.10.4", default-features = false, features = ["client", "tem
 x402-chain-eip155 = { version = "2.0.1", features = ["client", "telemetry"] }
 alloy-signer-local = "2"
 x402-types = { version = "2.0.1", default-features = false }
+# Implementing the x402 scheme-client traits (X402SchemeClient /
+# PaymentCandidateSigner) to re-case the signed recipient requires async-trait,
+# matching how the upstream crates declare those traits.
+async-trait = "0.1"
 # The payment crates (x402-reqwest, mpp) are built on reqwest 0.13, while the
 # keyed API client (src/api) stays on 0.12. Alias the 0.13 line under a second
 # name so the payment adapters speak the same reqwest types those crates expose

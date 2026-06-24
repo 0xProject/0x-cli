@@ -7,8 +7,8 @@ Trade tokens across Solana and EVM chains from your terminal. Built for both hum
 ## Quick Start
 
 ```bash
-# Build from source
-cargo install --path .
+# Install (macOS / Linux) — see Installation below for Windows / from source
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | sh
 
 # Configure
 0x config init
@@ -27,6 +27,7 @@ cargo install --path .
 - **4 APIs**: EVM Swap (Allowance Holder), Gasless Swap, Solana Swap, Cross-Chain
 - **21 chains**: Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, Linea, Scroll, Blast, Mantle, Berachain, Sonic, Unichain, World Chain, Abstract, Ink, Monad, HyperEVM, Solana, Tron
 - **Agent-first**: Auto-detect non-TTY for JSON output, structured error codes, stable exit codes, inline `RESPONSE:` schemas in every `--help`
+- **Pay-per-request (no API key)**: `--pay x402-evm` or `--pay mpp` settles ~$0.01 USDC per request via the 0x agent gateway — for autonomous agents with a funded wallet
 - **Safe by default**: OS keyring for wallet secrets, transaction simulation before every execution, `--dry-run` mode, exact token approvals
 - **Rich UX**: Colored tables, progress spinners, interactive confirmation, shell completions
 
@@ -46,10 +47,10 @@ Pin a specific version or change the install directory:
 
 ```bash
 # Install a specific version
-curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | ZEROX_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | ZEROEX_VERSION=v0.1.0 sh
 
 # Install somewhere on your PATH
-curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | ZEROX_BIN_DIR=/usr/local/bin sh
+curl -fsSL https://raw.githubusercontent.com/0xProject/0x-cli/main/scripts/install.sh | ZEROEX_BIN_DIR=/usr/local/bin sh
 ```
 
 On **Windows**, download the `.zip` for `x86_64-pc-windows-msvc` from the
@@ -119,10 +120,10 @@ By default, `wallet.evm` and `wallet.solana` (when given key material rather tha
 | `0x config set wallet.evm <key> --plaintext` | `~/.0x-config/config.toml` |
 | `0x config set wallet.solana /path/to/file.json` | `~/.0x-config/config.toml` (it's a path) |
 | `0x config set wallet.solana <base58>` | OS keyring |
-| `ZEROX_EVM_PRIVATE_KEY` / `ZEROX_SOLANA_KEYPAIR` env var | Read directly, never persisted |
+| `ZEROEX_EVM_PRIVATE_KEY` / `ZEROEX_SOLANA_KEYPAIR` env var | Read directly, never persisted |
 | `0x config set wallet.tron <hex-key>` | OS keyring |
 | `0x config set wallet.tron <hex-key> --plaintext` | `~/.0x-config/config.toml` |
-| `ZEROX_TRON_PRIVATE_KEY` env var | Read directly, never persisted |
+| `ZEROEX_TRON_PRIVATE_KEY` env var | Read directly, never persisted |
 
 `0x config show` reports keyring-stored wallets as `<stored in keyring>`. If the OS keyring is unavailable (e.g. headless Linux with no DBus), use `--plaintext` or the env vars.
 
@@ -132,13 +133,13 @@ Environment variables always take precedence over config file values.
 
 | Variable | Description |
 |----------|-------------|
-| `ZEROX_API_KEY` | 0x API key |
-| `ZEROX_EVM_PRIVATE_KEY` | EVM private key (hex) |
-| `ZEROX_SOLANA_KEYPAIR` | Solana keypair file path or base58 |
-| `ZEROX_TRON_PRIVATE_KEY` | Tron private key (hex) |
-| `ZEROX_DEFAULT_CHAIN` | Default chain name or ID |
-| `ZEROX_RPC_URL` | Override RPC URL for any chain |
-| `ZEROX_TELEMETRY` | Set falsy (`0`/`false`/`off`) to disable usage telemetry |
+| `ZEROEX_API_KEY` | 0x API key |
+| `ZEROEX_EVM_PRIVATE_KEY` | EVM private key (hex) |
+| `ZEROEX_SOLANA_KEYPAIR` | Solana keypair file path or base58 |
+| `ZEROEX_TRON_PRIVATE_KEY` | Tron private key (hex) |
+| `ZEROEX_DEFAULT_CHAIN` | Default chain name or ID |
+| `ZEROEX_RPC_URL` | Override RPC URL for any chain |
+| `ZEROEX_TELEMETRY` | Set falsy (`0`/`false`/`off`) to disable usage telemetry |
 | `DO_NOT_TRACK` | Set to `1` to disable usage telemetry |
 | `NO_COLOR` | Disable colored output |
 
@@ -277,6 +278,42 @@ Nothing to configure — the keypair lives in memory only.
 0x status 0xdef456... --type cross-chain --chain base --poll --poll-interval 10
 ```
 
+### Pay per request (x402 / MPP)
+
+Instead of a `0x-api-key`, `price` and `swap` can pay **~$0.01 USDC per request**
+through the 0x agent gateway — useful for an autonomous agent with a funded wallet
+and no key. Add `--pay` with one of two payment rails:
+
+| `--pay` | Rail | Wallet needs |
+|---------|------|--------------|
+| `x402-evm` | [x402](https://www.x402.org) over Base — signs an EIP-3009 USDC authorization (off-chain, no gas) | USDC on Base |
+| `mpp` | [MPP](https://mpp.dev) over Tempo (chainId 4217) — broadcasts a USDC.e transfer | USDC.e **and** native gas on Tempo |
+
+```bash
+# Pay for a price check with x402 (EVM wallet signs; no API key needed)
+0x price --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
+  --buy 0x4200000000000000000000000000000000000006 --amount 1000000 \
+  --pay x402-evm --max-payment 0.05
+
+# Pay for a swap quote via MPP/Tempo, then execute on-chain as usual
+0x swap --chain base --sell 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
+  --buy 0x4200000000000000000000000000000000000006 --amount 1000000 \
+  --pay mpp --yes
+```
+
+- **EVM AllowanceHolder only.** Rejected (free, `INPUT_INVALID`) with `--gasless`,
+  Solana/Tron, or `--buy-amount` (exact-out).
+- **`--max-payment <USD>`** (default `0.05`) caps the spend. If the gateway asks for
+  more, the CLI refuses **before signing/broadcasting** — `PAYMENT_EXCEEDS_LIMIT`
+  (exit 41), nothing spent.
+- **The payment is real, non-refundable money** charged per request — including when
+  a later on-chain swap reverts. Don't poll `price --pay` in a loop. The settlement
+  (tx hash, payer, amount) is reported under `metadata.payment` in JSON output.
+- `swap --pay` pays only for the **quote**; the on-chain swap still uses your wallet
+  and RPC. See exit codes 40–44 and the `PAYMENT_*` rows under [Error Codes](#error-codes).
+- For `--pay mpp`, point the Tempo RPC wherever you like with `--tempo-rpc <url>` or
+  `0x config set rpc.tempo <url>` (defaults to `https://rpc.tempo.xyz`).
+
 ## AI Agent Integration
 
 The CLI is designed as a first-class tool for AI agents and scripts.
@@ -350,7 +387,7 @@ On error:
     "message": "No API key configured",
     "category": "config",
     "retryable": false,
-    "suggestion": "Run '0x config set api_key <your-key>' or set ZEROX_API_KEY env var"
+    "suggestion": "Run '0x config set api_key <your-key>' or set ZEROEX_API_KEY env var"
   }
 }
 ```
@@ -458,7 +495,7 @@ Every interactive prompt has a flag equivalent:
 - **Redaction**: `0x config show` and `0x config get` never reveal secret material. Wallets stored in the keyring show as `<stored in keyring>`; plaintext wallets show as `***redacted***`; Solana file paths show verbatim because the path itself isn't sensitive.
 - **Transaction simulation**: EVM and Solana transactions are simulated via `eth_call` or `simulate_transaction` before submission. Tron cross-chain transactions are not pre-simulated.
 - **Approval strategy**: Default is `exact` (only approve the needed amount). Use `--approval unlimited` for max approval.
-- **Environment variables**: Sensitive values like private keys can be set via env vars (`ZEROX_EVM_PRIVATE_KEY`, `ZEROX_SOLANA_KEYPAIR`) to avoid persisting them at all — read-once, never written to disk or keyring.
+- **Environment variables**: Sensitive values like private keys can be set via env vars (`ZEROEX_EVM_PRIVATE_KEY`, `ZEROEX_SOLANA_KEYPAIR`) to avoid persisting them at all — read-once, never written to disk or keyring.
 
 ## Telemetry
 
@@ -485,7 +522,7 @@ The CLI sends **anonymous, opt-out** usage statistics (via Amplitude) to help us
 
 ```bash
 0x config set telemetry.enabled false   # persistent
-export ZEROX_TELEMETRY=0                 # per-shell
+export ZEROEX_TELEMETRY=0                 # per-shell
 export DO_NOT_TRACK=1                    # cross-tool standard
 ```
 

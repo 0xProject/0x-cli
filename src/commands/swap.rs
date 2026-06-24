@@ -228,6 +228,23 @@ pub async fn run(
         }
     }
 
+    // Agent payments cover only the EVM AllowanceHolder path. Reject before
+    // dispatching to the Solana / gasless flows (which would silently ignore
+    // --pay otherwise).
+    if args.pay.is_some() {
+        if !chain_info.is_evm() {
+            return Err(super::pay_requires_evm());
+        }
+        if args.gasless {
+            return Err(super::pay_incompatible("--gasless"));
+        }
+        // Reject exact-out up front (free) rather than paying for a quote the
+        // gateway may not support.
+        if amount_spec.is_exact_out() {
+            return Err(super::exact_out_unsupported("agent payments (--pay)"));
+        }
+    }
+
     if chain_info.is_solana() {
         return super::solana_swap::run(args, output, &config, global, chain_info).await;
     }
@@ -252,22 +269,63 @@ async fn run_evm_swap(
     let taker_address = format!("{:?}", signer.address());
 
     let mut metadata = Metadata::for_chain(chain_info);
-    let client = crate::api::client_for(global, config, output)?;
 
     // Step 1: Get quote. Spinner is cleared automatically on Drop, so a `?`
-    // early-return from the API call doesn't leak tick characters.
+    // early-return from the API call doesn't leak tick characters. With --pay
+    // the quote is bought through the agent gateway (no API key); the on-chain
+    // swap below is unchanged and still uses the wallet + RPC.
     let spinner = output.spinner_guard("Fetching Allowance Holder quote...");
-    let quote = client
-        .get_evm_quote(
-            chain_id,
-            &args.sell,
-            &args.buy,
-            &args.amount_spec(),
-            &taker_address,
-            Some(args.slippage),
-            args.recipient.as_deref(),
+    let mut pay_receipt: Option<crate::payment::PaymentReceipt> = None;
+    let quote: QuoteResponse = if let Some(pay) = args.pay {
+        spinner.set_message("Paying for Allowance Holder quote...");
+        let cap = crate::payment::max_payment_to_base_units(&args.max_payment)?;
+        let chain_id_str = chain_id.to_string();
+        let amount_spec = args.amount_spec();
+        let (amount_key, amount_val) = amount_spec.query_param();
+        let slippage_str = args.slippage.to_string();
+        let mut query: Vec<(&str, &str)> = vec![
+            ("chainId", chain_id_str.as_str()),
+            ("sellToken", args.sell.as_str()),
+            ("buyToken", args.buy.as_str()),
+            (amount_key, amount_val),
+            ("taker", taker_address.as_str()),
+            ("slippageBps", slippage_str.as_str()),
+        ];
+        if let Some(r) = args.recipient.as_deref() {
+            query.push(("recipient", r));
+        }
+        // Tempo RPC (mpp only): --tempo-rpc flag → `[rpc].tempo` config → default.
+        let tempo_rpc = args
+            .tempo_rpc
+            .as_deref()
+            .or_else(|| config.rpc.get("tempo").map(String::as_str));
+        let (q, receipt) = crate::payment::fetch::<QuoteResponse>(
+            pay.method(),
+            &signer,
+            true,
+            &query,
+            cap,
+            global.timeout,
+            tempo_rpc,
         )
         .await?;
+        metadata.payment = Some(receipt.clone());
+        pay_receipt = Some(receipt);
+        q
+    } else {
+        let client = crate::api::client_for(global, config, output)?;
+        client
+            .get_evm_quote(
+                chain_id,
+                &args.sell,
+                &args.buy,
+                &args.amount_spec(),
+                &taker_address,
+                Some(args.slippage),
+                args.recipient.as_deref(),
+            )
+            .await?
+    };
 
     metadata.zid = quote.zid.clone();
 
@@ -290,6 +348,19 @@ async fn run_evm_swap(
     let buy = SideMeta::from_meta(quote.buy_token.clone(), buy_meta);
 
     drop(spinner);
+
+    if let Some(receipt) = &pay_receipt {
+        output.info(&format!(
+            "Paid via {} ({} base units USDC){}",
+            receipt.method,
+            receipt.amount_base_units.as_deref().unwrap_or("?"),
+            receipt
+                .tx_hash
+                .as_deref()
+                .map(|t| format!(" — tx {t}"))
+                .unwrap_or_default(),
+        ));
+    }
 
     if quote.liquidity_available == Some(false) {
         return Err(CliError::Api {

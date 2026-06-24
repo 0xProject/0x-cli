@@ -10,7 +10,7 @@ use types::AppConfig;
 /// emit a warning when running against a public fallback endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcSource {
-    /// From `--rpc-url` or `ZEROX_RPC_URL`.
+    /// From `--rpc-url` or `ZEROEX_RPC_URL`.
     Override,
     /// From `rpc.<chain>` in the config file.
     Config,
@@ -62,11 +62,11 @@ pub struct ResolvedEnv {
     pub api_key: String,
 }
 
-/// Resolve the API environment: `--profile` / `ZEROX_PROFILE` first, then
+/// Resolve the API environment: `--profile` / `ZEROEX_PROFILE` first, then
 /// `active_profile` from the config file, then the default `[api]` section.
 /// Within a profile, unset fields fall back to the default section, so a
 /// profile may override just the key or just the URL. The `--api-key` flag
-/// (and `ZEROX_API_KEY`, which clap feeds into it) wins over both.
+/// (and `ZEROEX_API_KEY`, which clap feeds into it) wins over both.
 pub fn resolve_env(
     global: &crate::GlobalOpts,
     config: &AppConfig,
@@ -243,16 +243,16 @@ pub fn load_config() -> Result<AppConfig, CliError> {
     let mut config = load_config_disk_only()?;
 
     // Environment variable overrides — applied to the in-memory view only.
-    if let Ok(key) = std::env::var("ZEROX_API_KEY") {
+    if let Ok(key) = std::env::var("ZEROEX_API_KEY") {
         config.api.api_key = Some(key);
     }
-    if let Ok(key) = std::env::var("ZEROX_EVM_PRIVATE_KEY") {
+    if let Ok(key) = std::env::var("ZEROEX_EVM_PRIVATE_KEY") {
         config.wallet.evm = Some(key);
     }
-    if let Ok(key) = std::env::var("ZEROX_SOLANA_KEYPAIR") {
+    if let Ok(key) = std::env::var("ZEROEX_SOLANA_KEYPAIR") {
         config.wallet.solana = Some(key);
     }
-    if let Ok(chain) = std::env::var("ZEROX_DEFAULT_CHAIN") {
+    if let Ok(chain) = std::env::var("ZEROEX_DEFAULT_CHAIN") {
         config.defaults.chain = Some(chain);
     }
 
@@ -788,7 +788,7 @@ mod tests {
         config.active_profile = None;
         config.profiles.remove("other");
 
-        // 4. --api-key / ZEROX_API_KEY beats the profile's key.
+        // 4. --api-key / ZEROEX_API_KEY beats the profile's key.
         let env = resolve_env(&global_with(Some("stg"), Some("flag-key")), &config).unwrap();
         assert_eq!(env.api_key, "flag-key");
 

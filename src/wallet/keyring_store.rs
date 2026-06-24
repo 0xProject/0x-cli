@@ -53,7 +53,7 @@ mod real {
         CliError::Wallet {
             code: ErrorCode::KeyringUnavailable,
             message: format!(
-                "OS keyring error: {e}. Use --plaintext on `config set`, or set ZEROX_EVM_PRIVATE_KEY / ZEROX_SOLANA_KEYPAIR."
+                "OS keyring error: {e}. Use --plaintext on `config set`, or set ZEROEX_EVM_PRIVATE_KEY / ZEROEX_SOLANA_KEYPAIR."
             ),
         }
     }

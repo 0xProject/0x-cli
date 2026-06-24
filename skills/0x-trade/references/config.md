@@ -45,15 +45,15 @@ Non-interactive (agent-driven) setup:
 
 | Var | Overrides |
 |-----|-----------|
-| `ZEROX_API_KEY` | `api_key` |
-| `ZEROX_EVM_PRIVATE_KEY` | `wallet.evm` |
-| `ZEROX_SOLANA_KEYPAIR` | `wallet.solana` (path or base58) |
-| `ZEROX_TRON_PRIVATE_KEY` | `wallet.tron` |
-| `ZEROX_DEFAULT_CHAIN` | `defaults.chain` |
-| `ZEROX_RPC_URL` | RPC for the current command |
-| `ZEROX_OUTPUT` | `-o/--output` format |
-| `ZEROX_PROFILE` | Config profile to use (overrides active_profile) |
-| `ZEROX_TELEMETRY` | Set falsy (`0`/`false`/`off`) to disable usage telemetry |
+| `ZEROEX_API_KEY` | `api_key` |
+| `ZEROEX_EVM_PRIVATE_KEY` | `wallet.evm` |
+| `ZEROEX_SOLANA_KEYPAIR` | `wallet.solana` (path or base58) |
+| `ZEROEX_TRON_PRIVATE_KEY` | `wallet.tron` |
+| `ZEROEX_DEFAULT_CHAIN` | `defaults.chain` |
+| `ZEROEX_RPC_URL` | RPC for the current command |
+| `ZEROEX_OUTPUT` | `-o/--output` format |
+| `ZEROEX_PROFILE` | Config profile to use (overrides active_profile) |
+| `ZEROEX_TELEMETRY` | Set falsy (`0`/`false`/`off`) to disable usage telemetry |
 | `DO_NOT_TRACK` | Set to `1` to disable usage telemetry (cross-tool standard) |
 | `NO_COLOR` | Disables colored output |
 
@@ -78,8 +78,8 @@ section.
 ```
 
 When a profile is active, every API command prints `Profile '<name>' → <url>` on
-stderr. The banner is suppressed by --quiet. `ZEROX_PROFILE` selects a profile per-environment; `--api-key` /
-`ZEROX_API_KEY` still beat the profile's key.
+stderr. The banner is suppressed by --quiet. `ZEROEX_PROFILE` selects a profile per-environment; `--api-key` /
+`ZEROEX_API_KEY` still beat the profile's key.
 
 ## Telemetry
 
@@ -87,5 +87,5 @@ The CLI sends anonymous usage stats (which command ran, exit code, duration, cha
 
 - **Never sent:** token addresses, amounts, transaction/trade hashes, wallet addresses, API keys, RPC URLs, error messages, or IP.
 - **Identifier:** a random `telemetry.install_id` (a UUID, not a device/hardware fingerprint), shown in `config show`.
-- **Opt out** any of three ways: `0x config set telemetry.enabled false`, `ZEROX_TELEMETRY=0`, or `DO_NOT_TRACK=1`.
+- **Opt out** any of three ways: `0x config set telemetry.enabled false`, `ZEROEX_TELEMETRY=0`, or `DO_NOT_TRACK=1`.
 - Events spool to `~/.0x-config/telemetry-queue.jsonl` and flush in the background, so they never add latency to a command.

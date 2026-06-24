@@ -24,7 +24,7 @@ Read-only — no keypair needed, no keychain prompt.
   --yes -o json-envelope
 ```
 
-Requires a Solana keypair: `0x config set wallet.solana <path-or-base58>` or `ZEROX_SOLANA_KEYPAIR`. The transaction is simulated before submission; simulation failures exit 10 with the first simulation logs in `error.details.simulation_logs`.
+Requires a Solana keypair: `0x config set wallet.solana <path-or-base58>` or `ZEROEX_SOLANA_KEYPAIR`. The transaction is simulated before submission; simulation failures exit 10 with the first simulation logs in `error.details.simulation_logs`.
 
 ## Flag differences vs EVM (important)
 

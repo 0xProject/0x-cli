@@ -45,7 +45,7 @@ fn derive_address(signing_key: &SigningKey) -> String {
 
 /// Load a Tron signer from CLI flag, env var, OS keyring, or config file.
 ///
-/// Priority: `--wallet` flag → `ZEROX_TRON_PRIVATE_KEY` env → OS keyring →
+/// Priority: `--wallet` flag → `ZEROEX_TRON_PRIVATE_KEY` env → OS keyring →
 /// `config.wallet.tron` (config-file plaintext).
 pub fn load_tron_signer(
     config: &AppConfig,
@@ -53,7 +53,7 @@ pub fn load_tron_signer(
 ) -> Result<TronSigner, CliError> {
     let key = if let Some(wallet_arg) = cli_wallet {
         wallet_arg.to_string()
-    } else if let Ok(env_key) = std::env::var("ZEROX_TRON_PRIVATE_KEY") {
+    } else if let Ok(env_key) = std::env::var("ZEROEX_TRON_PRIVATE_KEY") {
         env_key
     } else if let Some(keyring_key) =
         crate::wallet::keyring_store::get(crate::wallet::keyring_store::keys::WALLET_TRON)
@@ -65,7 +65,7 @@ pub fn load_tron_signer(
     } else {
         return Err(CliError::Wallet {
             code: ErrorCode::WalletNotFound,
-            message: "No Tron wallet configured. Set via --wallet, ZEROX_TRON_PRIVATE_KEY env var, or 'config set wallet.tron <key>'".into(),
+            message: "No Tron wallet configured. Set via --wallet, ZEROEX_TRON_PRIVATE_KEY env var, or 'config set wallet.tron <key>'".into(),
         });
     };
 

@@ -7,13 +7,13 @@
 # checksum, and installs it to a bin directory on your PATH.
 #
 # Knobs (all optional, set as environment variables):
-#   ZEROX_VERSION   version to install, e.g. v0.1.0   (default: latest release)
-#   ZEROX_BIN_DIR   install directory                 (default: ~/.local/bin)
+#   ZEROEX_VERSION   version to install, e.g. v0.1.0   (default: latest release)
+#   ZEROEX_BIN_DIR   install directory                 (default: ~/.local/bin)
 #
 # Examples:
 #   curl -fsSL .../install.sh | sh
-#   curl -fsSL .../install.sh | ZEROX_VERSION=v0.1.0 sh
-#   curl -fsSL .../install.sh | ZEROX_BIN_DIR=/usr/local/bin sh
+#   curl -fsSL .../install.sh | ZEROEX_VERSION=v0.1.0 sh
+#   curl -fsSL .../install.sh | ZEROEX_BIN_DIR=/usr/local/bin sh
 
 set -eu
 
@@ -82,7 +82,7 @@ esac
 target="${cpu}-${os_name}"
 
 # --- resolve version --------------------------------------------------------
-version="${ZEROX_VERSION:-}"
+version="${ZEROEX_VERSION:-}"
 if [ -z "$version" ]; then
   info "${DIM}Resolving latest release...${RESET}"
   # The /releases/latest page 302-redirects to /releases/tag/<version>; parse
@@ -96,7 +96,7 @@ if [ -z "$version" ]; then
       | awk '/^[[:space:]]*Location:/ {print $2}' | tail -n1)"
   fi
   version="${loc##*/}"
-  [ -n "$version" ] || err "could not determine the latest version; set ZEROX_VERSION=vX.Y.Z"
+  [ -n "$version" ] || err "could not determine the latest version; set ZEROEX_VERSION=vX.Y.Z"
 fi
 case "$version" in v*) ;; *) version="v$version" ;; esac
 
@@ -148,11 +148,11 @@ binpath="$tmp/${BIN}-${target}/${BIN}"
 chmod +x "$binpath"
 
 # --- choose install dir -----------------------------------------------------
-bin_dir="${ZEROX_BIN_DIR:-$HOME/.local/bin}"
+bin_dir="${ZEROEX_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$bin_dir" 2>/dev/null || err "cannot create install dir: $bin_dir"
 if [ ! -w "$bin_dir" ]; then
   err "install dir is not writable: $bin_dir
-Re-run with a writable dir, e.g.  ZEROX_BIN_DIR=\$HOME/.local/bin
+Re-run with a writable dir, e.g.  ZEROEX_BIN_DIR=\$HOME/.local/bin
 or with elevated permissions for a system path."
 fi
 

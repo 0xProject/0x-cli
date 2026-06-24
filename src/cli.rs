@@ -10,13 +10,13 @@ use clap_complete::Shell;
         Supports EVM swaps, gasless swaps, Solana swaps, and cross-chain\n\
         swaps. Designed for both human traders and AI agents.",
     after_help = "ENVIRONMENT VARIABLES:\n\
-        \x20   ZEROX_API_KEY            0x API key (overrides config)\n\
-        \x20   ZEROX_EVM_PRIVATE_KEY    EVM private key (overrides wallet config)\n\
-        \x20   ZEROX_SOLANA_KEYPAIR     Solana keypair path or base58 (overrides wallet config)\n\
-        \x20   ZEROX_DEFAULT_CHAIN      Default chain (overrides config)\n\
-        \x20   ZEROX_RPC_URL            RPC URL (overrides config)\n\
-        \x20   ZEROX_PROFILE            Config profile to use (overrides active_profile)\n\
-        \x20   ZEROX_TELEMETRY          Set falsy (0/false/off) to disable usage telemetry\n\
+        \x20   ZEROEX_API_KEY            0x API key (overrides config)\n\
+        \x20   ZEROEX_EVM_PRIVATE_KEY    EVM private key (overrides wallet config)\n\
+        \x20   ZEROEX_SOLANA_KEYPAIR     Solana keypair path or base58 (overrides wallet config)\n\
+        \x20   ZEROEX_DEFAULT_CHAIN      Default chain (overrides config)\n\
+        \x20   ZEROEX_RPC_URL            RPC URL (overrides config)\n\
+        \x20   ZEROEX_PROFILE            Config profile to use (overrides active_profile)\n\
+        \x20   ZEROEX_TELEMETRY          Set falsy (0/false/off) to disable usage telemetry\n\
         \x20   DO_NOT_TRACK             Set to 1 to disable usage telemetry\n\
         \x20   NO_COLOR                 Disable colored output\n\n\
         CONFIG:\n\
@@ -45,7 +45,7 @@ pub struct Cli {
     pub command: Commands,
 
     /// Output format (auto-detects: human for TTY, json-envelope otherwise)
-    #[arg(short = 'o', long, global = true, value_enum, env = "ZEROX_OUTPUT")]
+    #[arg(short = 'o', long, global = true, value_enum, env = "ZEROEX_OUTPUT")]
     pub output: Option<OutputFormat>,
 
     /// Skip all confirmation prompts
@@ -65,15 +65,15 @@ pub struct Cli {
     pub dry_run: bool,
 
     /// Override the configured API key
-    #[arg(long, global = true, env = "ZEROX_API_KEY", hide_env = true)]
+    #[arg(long, global = true, env = "ZEROEX_API_KEY", hide_env = true)]
     pub api_key: Option<String>,
 
     /// Override the RPC URL for this command
-    #[arg(long, global = true, env = "ZEROX_RPC_URL", hide_env = true)]
+    #[arg(long, global = true, env = "ZEROEX_RPC_URL", hide_env = true)]
     pub rpc_url: Option<String>,
 
     /// Use a named config profile for this command (see '0x config set')
-    #[arg(long, global = true, env = "ZEROX_PROFILE", hide_env = true)]
+    #[arg(long, global = true, env = "ZEROEX_PROFILE", hide_env = true)]
     pub profile: Option<String>,
 
     /// Wallet path or name to use
@@ -330,6 +330,28 @@ pub enum SkillAction {
     },
 }
 
+/// Agent-payment rail for `--pay`: pay per request through the 0x agent
+/// gateway instead of using an API key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PaymentArg {
+    /// x402 over Base/EVM (USDC, EIP-3009 signature).
+    #[value(name = "x402-evm")]
+    X402Evm,
+    /// MPP over Tempo mainnet (USDC.e, on-chain push).
+    #[value(name = "mpp")]
+    Mpp,
+}
+
+impl PaymentArg {
+    /// Map the CLI flag to the payment-module method.
+    pub fn method(self) -> crate::payment::PaymentMethod {
+        match self {
+            Self::X402Evm => crate::payment::PaymentMethod::X402Evm,
+            Self::Mpp => crate::payment::PaymentMethod::MppTempo,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SkillTopic {
     /// Gasless swaps and trade-hash polling
@@ -509,7 +531,7 @@ impl OutputFormat {
 #[command(group(clap::ArgGroup::new("price_amount").required(true).args(["amount", "buy_amount"])))]
 pub struct PriceArgs {
     /// Chain ID or name (e.g. base, 8453, ethereum, solana)
-    #[arg(short = 'c', long, env = "ZEROX_DEFAULT_CHAIN")]
+    #[arg(short = 'c', long, env = "ZEROEX_DEFAULT_CHAIN")]
     pub chain: String,
 
     /// Token to sell (contract address, e.g. 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)
@@ -536,6 +558,21 @@ pub struct PriceArgs {
     /// Use gasless pricing
     #[arg(long)]
     pub gasless: bool,
+
+    /// Pay per request through the 0x agent gateway instead of an API key.
+    /// EVM AllowanceHolder only (rejected with --gasless / Solana / Tron).
+    #[arg(long, value_enum)]
+    pub pay: Option<PaymentArg>,
+
+    /// Maximum payment per request in USD; the CLI refuses to sign/broadcast
+    /// above this (only used with --pay).
+    #[arg(long, default_value = "0.05")]
+    pub max_payment: String,
+
+    /// Tempo RPC URL for --pay mpp. Falls back to `rpc.tempo` in config
+    /// (`0x config set rpc.tempo <url>`), then https://rpc.tempo.xyz.
+    #[arg(long)]
+    pub tempo_rpc: Option<String>,
 }
 
 impl PriceArgs {
@@ -555,7 +592,7 @@ impl PriceArgs {
 #[command(group(clap::ArgGroup::new("swap_amount").required(true).args(["amount", "buy_amount"])))]
 pub struct SwapArgs {
     /// Chain ID or name (e.g. base, 8453, ethereum, solana)
-    #[arg(short = 'c', long, env = "ZEROX_DEFAULT_CHAIN")]
+    #[arg(short = 'c', long, env = "ZEROEX_DEFAULT_CHAIN")]
     pub chain: String,
 
     /// Token to sell (contract address)
@@ -594,6 +631,22 @@ pub struct SwapArgs {
     /// Token approval strategy (EVM only — warns and is ignored on Solana)
     #[arg(long, value_enum, default_value = "exact")]
     pub approval: ApprovalStrategy,
+
+    /// Pay per request through the 0x agent gateway instead of an API key.
+    /// Pays only for the quote; the on-chain swap still uses your wallet + RPC.
+    /// EVM AllowanceHolder only (rejected with --gasless / Solana / Tron).
+    #[arg(long, value_enum)]
+    pub pay: Option<PaymentArg>,
+
+    /// Maximum payment per request in USD; the CLI refuses to sign/broadcast
+    /// above this (only used with --pay).
+    #[arg(long, default_value = "0.05")]
+    pub max_payment: String,
+
+    /// Tempo RPC URL for --pay mpp. Falls back to `rpc.tempo` in config
+    /// (`0x config set rpc.tempo <url>`), then https://rpc.tempo.xyz.
+    #[arg(long)]
+    pub tempo_rpc: Option<String>,
 }
 
 impl SwapArgs {

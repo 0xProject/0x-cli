@@ -46,6 +46,10 @@ pub struct Metadata {
     /// 0x request tracking ID from API responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zid: Option<String>,
+    /// Agent-payment settlement, present only when the command paid per
+    /// request via `--pay` (x402 / MPP) instead of an API key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment: Option<crate::payment::PaymentReceipt>,
 }
 
 impl Default for Metadata {
@@ -55,6 +59,7 @@ impl Default for Metadata {
             chain_name: None,
             api_version: "v2",
             zid: None,
+            payment: None,
         }
     }
 }

@@ -7,7 +7,7 @@
 //!   `option_env!`, so dev and CI builds have no key and this module does
 //!   nothing — tests can't accidentally phone home.
 //! - **Opt-out, three ways.** `0x config set telemetry.enabled false`, the
-//!   `ZEROX_TELEMETRY` env var (falsy), or the cross-tool `DO_NOT_TRACK`
+//!   `ZEROEX_TELEMETRY` env var (falsy), or the cross-tool `DO_NOT_TRACK`
 //!   standard. Resolution is the pure [`telemetry_allowed`] function.
 //! - **Hybrid delivery.** Events spool to `~/.0x-config/telemetry-queue.jsonl`.
 //!   [`init`] spawns a background flush of the backlog that overlaps the
@@ -47,7 +47,7 @@ struct OptOutInputs {
 }
 
 /// Whether telemetry may run this invocation. Order: no compiled key → off;
-/// `DO_NOT_TRACK` set to anything other than empty/`0` → off; `ZEROX_TELEMETRY`
+/// `DO_NOT_TRACK` set to anything other than empty/`0` → off; `ZEROEX_TELEMETRY`
 /// falsy → off; config `telemetry.enabled == false` → off.
 fn telemetry_allowed(i: &OptOutInputs) -> bool {
     if i.compiled_key.is_none() {
@@ -111,7 +111,7 @@ pub fn init() -> Option<Telemetry> {
 
     let inputs = OptOutInputs {
         compiled_key: AMPLITUDE_API_KEY,
-        zerox_telemetry: std::env::var("ZEROX_TELEMETRY").ok(),
+        zerox_telemetry: std::env::var("ZEROEX_TELEMETRY").ok(),
         do_not_track: std::env::var("DO_NOT_TRACK").ok(),
         config_enabled: config.telemetry.enabled,
     };

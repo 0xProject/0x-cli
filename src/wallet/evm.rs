@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 /// Load an EVM signer from CLI flag, env var, OS keyring, or config file.
 ///
-/// Priority: `--wallet` flag → `ZEROX_EVM_PRIVATE_KEY` env → OS keyring → config plaintext.
+/// Priority: `--wallet` flag → `ZEROEX_EVM_PRIVATE_KEY` env → OS keyring → config plaintext.
 /// Keyring failures (no daemon, denied access, etc.) fall through silently to
 /// the config file rather than aborting the load — `config set` is the place
 /// where keyring errors should surface, not arbitrary read paths.
@@ -15,7 +15,7 @@ pub fn load_evm_signer(
 ) -> Result<PrivateKeySigner, CliError> {
     let key = if let Some(wallet_arg) = cli_wallet {
         wallet_arg.to_string()
-    } else if let Ok(env_key) = std::env::var("ZEROX_EVM_PRIVATE_KEY") {
+    } else if let Ok(env_key) = std::env::var("ZEROEX_EVM_PRIVATE_KEY") {
         env_key
     } else if let Some(keyring_key) =
         crate::wallet::keyring_store::get(crate::wallet::keyring_store::keys::WALLET_EVM)
@@ -27,7 +27,7 @@ pub fn load_evm_signer(
     } else {
         return Err(CliError::Wallet {
             code: ErrorCode::WalletNotFound,
-            message: "No EVM wallet configured. Set via --wallet, ZEROX_EVM_PRIVATE_KEY env var, or 'config set wallet.evm <key>'".into(),
+            message: "No EVM wallet configured. Set via --wallet, ZEROEX_EVM_PRIVATE_KEY env var, or 'config set wallet.evm <key>'".into(),
         });
     };
 

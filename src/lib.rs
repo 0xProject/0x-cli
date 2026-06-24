@@ -6,6 +6,7 @@ pub mod config;
 pub mod confirm;
 pub mod error;
 pub mod output;
+pub mod payment;
 pub mod telemetry;
 pub mod token_cache;
 pub mod wallet;

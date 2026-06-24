@@ -128,6 +128,23 @@ pub async fn run(
         }
     }
 
+    // Agent-payment path: pay per request through the gateway instead of an
+    // API key. EVM AllowanceHolder only.
+    if let Some(pay) = args.pay {
+        if !chain_info.is_evm() {
+            return Err(super::pay_requires_evm());
+        }
+        if args.gasless {
+            return Err(super::pay_incompatible("--gasless"));
+        }
+        // Reject exact-out up front (free) rather than paying for a request the
+        // gateway may not support.
+        if amount_spec.is_exact_out() {
+            return Err(super::exact_out_unsupported("agent payments (--pay)"));
+        }
+        return run_paid_price(args, pay, &config, output, global, chain_info, &amount_spec).await;
+    }
+
     let client = crate::api::client_for(global, &config, output)?;
 
     let spinner = output.spinner("Fetching price...");
@@ -315,6 +332,100 @@ pub async fn run(
         });
     }
 
+    Ok(output.emit_success("price", &result, metadata, warnings, 0))
+}
+
+/// Fetch an indicative price through the agent gateway, paying per request via
+/// x402 / MPP. Mirrors the standard EVM price flow (token metadata + render)
+/// but the transport is a paid handshake, and the settlement is surfaced in
+/// `metadata.payment` plus a human info line.
+#[allow(clippy::too_many_arguments)]
+async fn run_paid_price(
+    args: &PriceArgs,
+    pay: crate::cli::PaymentArg,
+    config: &crate::config::types::AppConfig,
+    output: &OutputHandler,
+    global: &crate::GlobalOpts,
+    chain_info: &chain::ChainInfo,
+    amount_spec: &crate::api::types::AmountSpec,
+) -> Result<i32, CliError> {
+    let cap = crate::payment::max_payment_to_base_units(&args.max_payment)?;
+    let signer = crate::wallet::evm::load_evm_signer(config, global.wallet.as_deref())?;
+
+    let chain_id = chain_info.evm_chain_id()?;
+    let chain_id_str = chain_id.to_string();
+    let (amount_key, amount_val) = amount_spec.query_param();
+    let query: Vec<(&str, &str)> = vec![
+        ("chainId", chain_id_str.as_str()),
+        ("sellToken", args.sell.as_str()),
+        ("buyToken", args.buy.as_str()),
+        (amount_key, amount_val),
+    ];
+
+    // Tempo RPC (mpp only): --tempo-rpc flag → `[rpc].tempo` config → default.
+    let tempo_rpc = args
+        .tempo_rpc
+        .as_deref()
+        .or_else(|| config.rpc.get("tempo").map(String::as_str));
+
+    let spinner = output.spinner(&format!("Paying for price via {}...", pay.method().as_str()));
+    let result = crate::payment::fetch::<PriceResponse>(
+        pay.method(),
+        &signer,
+        false,
+        &query,
+        cap,
+        global.timeout,
+        tempo_rpc,
+    )
+    .await;
+    if let Some(s) = &spinner {
+        s.set_message("Resolving token metadata...");
+    }
+    let (resp, receipt) = result?;
+
+    let rpc_url =
+        config::try_resolve_rpc_url_with_override(global.rpc_url.as_deref(), config, chain_info);
+    let mut cache = TokenCache::new();
+    let mut warnings: Vec<Warning> = Vec::new();
+    let (sell_meta, buy_meta) = resolve_pair_evm(
+        &mut cache,
+        rpc_url.as_deref(),
+        chain_info.numeric_id().unwrap_or(0),
+        &resp.sell_token,
+        &resp.buy_token,
+        &mut warnings,
+    )
+    .await;
+    let sell = SideMeta::from_meta(resp.sell_token.clone(), sell_meta);
+    let buy = SideMeta::from_meta(resp.buy_token.clone(), buy_meta);
+
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
+
+    output.info(&format!(
+        "Paid via {} ({} base units USDC){}",
+        receipt.method,
+        receipt.amount_base_units.as_deref().unwrap_or("?"),
+        receipt
+            .tx_hash
+            .as_deref()
+            .map(|t| format!(" — tx {t}"))
+            .unwrap_or_default(),
+    ));
+
+    let mut metadata = Metadata::for_chain(chain_info);
+    metadata.zid = resp.zid.clone();
+    metadata.payment = Some(receipt);
+
+    let result = build_price_result(chain_info, &resp, &sell, &buy);
+    if !result.liquidity_available {
+        warnings.push(Warning {
+            code: "NO_LIQUIDITY".into(),
+            message: "Liquidity may not be available for this pair".into(),
+        });
+    }
     Ok(output.emit_success("price", &result, metadata, warnings, 0))
 }
 

@@ -91,6 +91,18 @@ keyring = { version = "3", features = [
     "crypto-rust",
     "async-io",
 ] }
+x402-reqwest = { version = "2.0.1", default-features = false, features = ["json"] }
+mpp = { version = "0.10.4", default-features = false, features = ["client", "tempo", "middleware", "reqwest-rustls-tls"] }
+# `telemetry` pulls `tracing` (the v2_eip155_upto client references it
+# unconditionally, so `client` alone won't compile). The CLI already uses tracing.
+x402-chain-eip155 = { version = "2.0.1", features = ["client", "telemetry"] }
+alloy-signer-local = "2"
+x402-types = { version = "2.0.1", default-features = false }
+# The payment crates (x402-reqwest, mpp) are built on reqwest 0.13, while the
+# keyed API client (src/api) stays on 0.12. Alias the 0.13 line under a second
+# name so the payment adapters speak the same reqwest types those crates expose
+# without forcing a crate-wide HTTP upgrade.
+reqwest_payments = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls", "query"] }
 
 [dev-dependencies]
 assert_cmd = "2"

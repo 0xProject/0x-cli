@@ -5,7 +5,7 @@ use solana_sdk::signer::Signer;
 
 /// Load a Solana keypair from CLI flag, env var, OS keyring, or config file.
 ///
-/// Priority: `--wallet` flag → `ZEROX_SOLANA_KEYPAIR` env → OS keyring → config plaintext.
+/// Priority: `--wallet` flag → `ZEROEX_SOLANA_KEYPAIR` env → OS keyring → config plaintext.
 /// The keyring stores key material (base58 or JSON array). File paths are stored
 /// in the config file because the path itself isn't secret. Keyring failures
 /// fall through silently to the config file.
@@ -15,7 +15,7 @@ pub fn load_solana_keypair(
 ) -> Result<Keypair, CliError> {
     let source = if let Some(wallet_arg) = cli_wallet {
         wallet_arg.to_string()
-    } else if let Ok(env_val) = std::env::var("ZEROX_SOLANA_KEYPAIR") {
+    } else if let Ok(env_val) = std::env::var("ZEROEX_SOLANA_KEYPAIR") {
         env_val
     } else if let Some(keyring_val) =
         crate::wallet::keyring_store::get(crate::wallet::keyring_store::keys::WALLET_SOLANA)
@@ -27,7 +27,7 @@ pub fn load_solana_keypair(
     } else {
         return Err(CliError::Wallet {
             code: ErrorCode::WalletNotFound,
-            message: "No Solana wallet configured. Set via --wallet, ZEROX_SOLANA_KEYPAIR env var, or 'config set wallet.solana <path>'".into(),
+            message: "No Solana wallet configured. Set via --wallet, ZEROEX_SOLANA_KEYPAIR env var, or 'config set wallet.solana <path>'".into(),
         });
     };
 

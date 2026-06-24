@@ -57,6 +57,22 @@ pub enum ErrorCode {
     BridgeFailed,
     BridgeTimeout,
 
+    // Agent-payment errors (x402 / MPP via the agent gateway)
+    /// The 402 challenge from the gateway was missing, malformed, or offered
+    /// no payment scheme this CLI can satisfy.
+    PaymentChallengeInvalid,
+    /// The challenge's required amount exceeded the `--max-payment` cap, so the
+    /// CLI refused to sign/broadcast. No money was spent.
+    PaymentExceedsLimit,
+    /// Signing the payment authorization (x402 EIP-3009) failed.
+    PaymentSigningFailed,
+    /// The payment was submitted but the gateway rejected it or on-chain
+    /// settlement failed. Money may have been spent without a usable response.
+    PaymentSettlementFailed,
+    /// The payment wallet lacks the funds to pay (USDC / USDC.e, or native gas
+    /// for an MPP push broadcast).
+    PaymentWalletUnfunded,
+
     // User errors
     UserCancelled,
 }
@@ -82,6 +98,11 @@ impl ErrorCode {
             | Self::TransactionTimeout
             | Self::QuoteExpired => "execution",
             Self::BridgeFailed | Self::BridgeTimeout => "bridge",
+            Self::PaymentChallengeInvalid
+            | Self::PaymentExceedsLimit
+            | Self::PaymentSigningFailed
+            | Self::PaymentSettlementFailed
+            | Self::PaymentWalletUnfunded => "payment",
             Self::UserCancelled => "input",
         }
     }
@@ -124,6 +145,14 @@ impl ErrorCode {
             Self::QuoteExpired => 1,
             Self::BridgeFailed => 1,
             Self::BridgeTimeout => 12,
+            // Dedicated 40-range for agent-payment failures so agents can
+            // distinguish "cap refused, nothing spent" (41) from "money spent,
+            // no usable result" (43). Mirrored in SKILL.md's exit-code table.
+            Self::PaymentChallengeInvalid => 40,
+            Self::PaymentExceedsLimit => 41,
+            Self::PaymentSigningFailed => 42,
+            Self::PaymentSettlementFailed => 43,
+            Self::PaymentWalletUnfunded => 44,
             Self::UserCancelled => 20,
         }
     }
@@ -163,6 +192,11 @@ impl ErrorCode {
             Self::QuoteExpired => "QUOTE_EXPIRED",
             Self::BridgeFailed => "BRIDGE_FAILED",
             Self::BridgeTimeout => "BRIDGE_TIMEOUT",
+            Self::PaymentChallengeInvalid => "PAYMENT_CHALLENGE_INVALID",
+            Self::PaymentExceedsLimit => "PAYMENT_EXCEEDS_LIMIT",
+            Self::PaymentSigningFailed => "PAYMENT_SIGNING_FAILED",
+            Self::PaymentSettlementFailed => "PAYMENT_SETTLEMENT_FAILED",
+            Self::PaymentWalletUnfunded => "PAYMENT_WALLET_UNFUNDED",
             Self::UserCancelled => "USER_CANCELLED",
         }
     }
@@ -229,10 +263,10 @@ impl CliError {
             Self::Transaction { suggestion, .. } => suggestion.as_deref(),
             Self::Config { code, .. } => match code {
                 ErrorCode::ApiKeyMissing => {
-                    Some("Run '0x config set api_key <your-key>' or set ZEROX_API_KEY env var")
+                    Some("Run '0x config set api_key <your-key>' or set ZEROEX_API_KEY env var")
                 }
                 ErrorCode::WalletNotFound => Some(
-                    "Run '0x config set wallet.evm <private-key>' or set ZEROX_EVM_PRIVATE_KEY",
+                    "Run '0x config set wallet.evm <private-key>' or set ZEROEX_EVM_PRIVATE_KEY",
                 ),
                 ErrorCode::ConfigNotFound => Some("Run '0x config init' to set up your config"),
                 _ => None,
@@ -390,6 +424,11 @@ pub(crate) const ALL_ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::QuoteExpired,
     ErrorCode::BridgeFailed,
     ErrorCode::BridgeTimeout,
+    ErrorCode::PaymentChallengeInvalid,
+    ErrorCode::PaymentExceedsLimit,
+    ErrorCode::PaymentSigningFailed,
+    ErrorCode::PaymentSettlementFailed,
+    ErrorCode::PaymentWalletUnfunded,
     ErrorCode::UserCancelled,
 ];
 

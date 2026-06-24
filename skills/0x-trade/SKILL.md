@@ -101,10 +101,28 @@ On error, `status` is `"error"` and a structured `error` object replaces `data`:
 | 11 | Transaction reverted on-chain | Don't retry as-is; explain to the user. |
 | 12 | Pending / timed out — tx may still land | Poll with `0x status` (see references). |
 | 20 | User declined the confirmation prompt | Stop; don't re-run. |
+| 40 | Agent-payment challenge invalid (`--pay`) — no payable scheme offered | Nothing spent; report it. |
+| 41 | Payment exceeded `--max-payment` — refused before signing | **Nothing spent.** Only raise the cap if the amount is expected. |
+| 42 | Payment signing failed | Verify the payment wallet; nothing spent. |
+| 43 | Payment settlement failed | **Money may have been spent** with no usable result — don't blindly retry; check the wallet. |
+| 44 | Payment wallet unfunded (USDC/USDC.e or native gas) | Fund the payment wallet. |
 | 25 | Preview emitted, confirmation required (`--yes` missing) | Show the quote to the user, or re-run with `--yes`. |
 | 30 | Dry-run completed | Report the simulated result. |
 
 The full error-code catalog (code → category → retryable → action) is in `references/errors.md`.
+
+## Paying per request instead of an API key (`--pay`)
+
+`price` and `swap` accept `--pay <x402-evm|mpp>` to pay ~$0.01 in USDC per request through the 0x agent gateway instead of using an API key — useful for an autonomous agent with a funded wallet and no key.
+
+- **EVM AllowanceHolder only.** Rejected (`INPUT_INVALID`) with `--gasless`, Solana, or Tron.
+- **`x402-evm`**: signs an EIP-3009 USDC authorization on Base; needs USDC in the EVM wallet.
+- **`mpp`**: broadcasts a USDC.e transfer on Tempo (chainId 4217); needs USDC.e **and** native gas there. Override the RPC with `--tempo-rpc` / `ZEROEX_TEMPO_RPC_URL`.
+- **`--max-payment <USD>`** (default `0.05`) caps the spend; the CLI refuses *before* signing/broadcasting if the gateway asks for more (`PAYMENT_EXCEEDS_LIMIT`, exit 41 — nothing spent).
+- **Every paid request costs real, non-refundable money**, including when the on-chain swap later reverts. Don't poll `price --pay` in a loop. The settlement (tx hash, payer, amount) is in `metadata.payment`.
+- `swap --pay` pays only for the *quote*; the on-chain swap still uses your wallet + RPC as usual.
+
+See the `PAYMENT_*` rows in `references/errors.md` (exit 40–44) for recovery — exit 41 means nothing was spent; exit 43 means money may have moved without a usable result.
 
 ## Going deeper — read on demand
 

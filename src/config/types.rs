@@ -126,7 +126,7 @@ pub struct WalletConfig {
 pub struct TelemetryConfig {
     /// Whether anonymous usage stats may be sent. User-settable via
     /// `0x config set telemetry.enabled false` (also overridable by the
-    /// `ZEROX_TELEMETRY` / `DO_NOT_TRACK` env vars).
+    /// `ZEROEX_TELEMETRY` / `DO_NOT_TRACK` env vars).
     #[serde(default = "default_telemetry_enabled")]
     pub enabled: bool,
 

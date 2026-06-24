@@ -181,7 +181,7 @@ fn test_swap_no_wallet_json_error() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
     // API key must be set, otherwise the failure surfaces as API_KEY_MISSING
     // before we ever reach the wallet load.
-    cmd.env("ZEROX_API_KEY", "dummy-test-key");
+    cmd.env("ZEROEX_API_KEY", "dummy-test-key");
     let output = cmd
         .args([
             "swap",
@@ -212,7 +212,7 @@ fn test_swap_no_wallet_json_error() {
 #[test]
 fn test_swap_no_wallet_envelope_error() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
-    cmd.env("ZEROX_API_KEY", "dummy-test-key");
+    cmd.env("ZEROEX_API_KEY", "dummy-test-key");
     let output = cmd
         .args([
             "swap",
@@ -246,8 +246,8 @@ fn test_swap_no_wallet_envelope_error() {
 #[test]
 fn test_solana_swap_no_wallet() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
-    cmd.env("ZEROX_API_KEY", "dummy-test-key")
-        .env_remove("ZEROX_SOLANA_KEYPAIR");
+    cmd.env("ZEROEX_API_KEY", "dummy-test-key")
+        .env_remove("ZEROEX_SOLANA_KEYPAIR");
     let output = cmd
         .args([
             "swap",
@@ -276,7 +276,7 @@ fn test_solana_swap_no_wallet() {
 #[test]
 fn test_cross_chain_no_wallet() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
-    cmd.env("ZEROX_API_KEY", "dummy-test-key");
+    cmd.env("ZEROEX_API_KEY", "dummy-test-key");
     let output = cmd
         .args([
             "cross-chain",
@@ -481,7 +481,7 @@ fn test_telemetry_inert_without_compiled_key() {
 /// Opt-out env vars are honored without error and leave no telemetry trace.
 #[test]
 fn test_telemetry_opt_out_env_leaves_no_trace() {
-    for (k, v) in [("DO_NOT_TRACK", "1"), ("ZEROX_TELEMETRY", "0")] {
+    for (k, v) in [("DO_NOT_TRACK", "1"), ("ZEROEX_TELEMETRY", "0")] {
         let (mut cmd, tmp) = cmd_in_temp_home();
         cmd.env(k, v).args(["chains", "-o", "json"]).assert().success();
         let queue = tmp.path().join(".0x-config/telemetry-queue.jsonl");
@@ -534,7 +534,7 @@ fn test_completions_zsh() {
 fn test_price_without_api_key_exits_5() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
     let output = cmd
-        .env_remove("ZEROX_API_KEY")
+        .env_remove("ZEROEX_API_KEY")
         .args([
             "price",
             "--chain",
@@ -574,10 +574,10 @@ fn test_swap_zero_amount_rejected() {
     let (mut cmd, _tmp) = cmd_in_temp_home();
     let output = cmd
         .env(
-            "ZEROX_EVM_PRIVATE_KEY",
+            "ZEROEX_EVM_PRIVATE_KEY",
             "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
         )
-        .env("ZEROX_API_KEY", "test")
+        .env("ZEROEX_API_KEY", "test")
         .args([
             "swap",
             "--chain",
@@ -608,8 +608,8 @@ fn test_dry_run_flag_accepted() {
     // We run with no wallet so the call short-circuits at WALLET_NOT_FOUND
     // before any RPC / API call.
     let (mut cmd, _tmp) = cmd_in_temp_home();
-    cmd.env("ZEROX_API_KEY", "dummy-test-key")
-        .env_remove("ZEROX_EVM_PRIVATE_KEY");
+    cmd.env("ZEROEX_API_KEY", "dummy-test-key")
+        .env_remove("ZEROEX_EVM_PRIVATE_KEY");
     let output = cmd
         .args([
             "swap",
@@ -658,4 +658,98 @@ fn swap_rejects_tron_with_cross_chain_hint() {
     let out = cmd.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("cross-chain"), "expected cross-chain hint, got: {stdout}");
+}
+
+// ─── Agent payments (--pay) ───────────────────────────────────
+
+#[test]
+fn price_help_lists_pay_flags() {
+    cmd().args(["price", "--help"]).assert().success().stdout(
+        predicate::str::contains("--pay")
+            .and(predicate::str::contains("--max-payment"))
+            .and(predicate::str::contains("x402-evm"))
+            .and(predicate::str::contains("mpp")),
+    );
+}
+
+#[test]
+fn swap_help_lists_pay_flag() {
+    cmd()
+        .args(["swap", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--pay").and(predicate::str::contains("--tempo-rpc")));
+}
+
+#[test]
+fn pay_invalid_value_rejected_by_clap() {
+    // Unknown --pay value is an arg-parse error listing the valid choices.
+    cmd()
+        .args([
+            "price", "--chain", "base",
+            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+            "--amount", "100000", "--pay", "bogus",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("x402-evm").and(predicate::str::contains("mpp")));
+}
+
+#[test]
+fn pay_rejected_on_solana_chain() {
+    // --pay is EVM-only; rejected before any wallet/API-key load.
+    let (mut cmd, _tmp) = cmd_in_temp_home();
+    let out = cmd
+        .args([
+            "price", "--chain", "solana",
+            "--sell", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "--buy", "So11111111111111111111111111111111111111112",
+            "--amount", "1000000", "--pay", "x402-evm", "-o", "json",
+        ])
+        .output()
+        .expect("failed to run");
+    assert!(!out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("invalid JSON");
+    assert_eq!(json["code"], "INPUT_INVALID");
+}
+
+#[test]
+fn pay_rejected_with_gasless() {
+    let (mut cmd, _tmp) = cmd_in_temp_home();
+    let out = cmd
+        .args([
+            "price", "--chain", "base",
+            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+            "--amount", "100000", "--pay", "x402-evm", "--gasless", "-o", "json",
+        ])
+        .output()
+        .expect("failed to run");
+    assert!(!out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("invalid JSON");
+    assert_eq!(json["code"], "INPUT_INVALID");
+}
+
+#[test]
+fn pay_invalid_max_payment_rejected() {
+    // A non-positive cap must fail closed (never become "unlimited"). Uses a
+    // throwaway key so the wallet loads and we reach the cap parse.
+    let (mut cmd, _tmp) = cmd_in_temp_home();
+    let out = cmd
+        .env(
+            "ZEROEX_EVM_PRIVATE_KEY",
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .args([
+            "price", "--chain", "base",
+            "--sell", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "--buy", "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE",
+            "--amount", "100000", "--pay", "x402-evm", "--max-payment", "0", "-o", "json",
+        ])
+        .output()
+        .expect("failed to run");
+    assert!(!out.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("invalid JSON");
+    assert_eq!(json["code"], "INPUT_INVALID");
 }

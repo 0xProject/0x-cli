@@ -8,7 +8,7 @@ Every error carries: `code` (stable), `category`, `retryable`, `message`, and us
 |--------------|----------|-----:|:---------:|----------|
 | `CONFIG_NOT_FOUND` | config | 3 | no | Run `0x config init`. |
 | `CONFIG_INVALID` | config | 3 | no | Inspect `~/.0x-config/config.toml`; fix or re-init. |
-| `API_KEY_MISSING` | config | 5 | no | `0x config set api_key <key>` or `ZEROX_API_KEY`. |
+| `API_KEY_MISSING` | config | 5 | no | `0x config set api_key <key>` or `ZEROEX_API_KEY`. |
 | `WALLET_NOT_FOUND` | config | 3 | no | `0x config set wallet.evm <key>` / `wallet.solana <path>`. |
 | `WALLET_INVALID` | config | 3 | no | The stored key/keypair doesn't parse — re-set it. |
 | `KEYRING_UNAVAILABLE` | config | 3 | no | No OS keyring (headless Linux) — re-set the secret with `--plaintext` or use env vars. |
@@ -32,6 +32,11 @@ Every error carries: `code` (stable), `category`, `retryable`, `message`, and us
 | `BRIDGE_FAILED` | bridge | 1 | no | Check `data.failure_reason` via `0x status`. |
 | `BRIDGE_TIMEOUT` | bridge | 12 | yes | Bridge in flight — keep polling `0x status --type cross-chain`. |
 | `USER_CANCELLED` | input | 20 | no | The user said no. Stop. |
+| `PAYMENT_CHALLENGE_INVALID` | payment | 40 | no | The agent gateway's 402 offered no scheme the CLI can pay (`--pay`). Nothing spent — report it. |
+| `PAYMENT_EXCEEDS_LIMIT` | payment | 41 | no | Required payment exceeded `--max-payment`; the CLI refused to sign. **Nothing spent.** Raise the cap only if the amount is expected. |
+| `PAYMENT_SIGNING_FAILED` | payment | 42 | no | Signing the x402 payment authorization failed — verify the configured payment wallet. Nothing spent. |
+| `PAYMENT_SETTLEMENT_FAILED` | payment | 43 | no | Payment submitted but rejected/failed on settlement. **Money may have been spent** without a usable response — do not blindly retry; check the wallet. |
+| `PAYMENT_WALLET_UNFUNDED` | payment | 44 | no | Payment wallet lacks USDC/USDC.e (or native gas for an MPP push). Fund it. |
 
 ## SIMULATION_FAILED (exit 10) — the special case
 

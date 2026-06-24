@@ -11113,7 +11113,7 @@ dependencies = [
 
 [[package]]
 name = "zero-x-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "alloy 1.8.3",
  "alloy-dyn-abi",
